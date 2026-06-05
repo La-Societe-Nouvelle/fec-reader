@@ -1,0 +1,5 @@
+JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Montant|Sens|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise
+VTE|Ventes|VT0001|20240315|70600|Ventes produits|||FA00003|20240310|Vente service|2500,00|C|||20240315||
+VTE|Ventes|VT0001|20240315|411000|Client Robert|C002|Robert SA|FA00003|20240310|Vente service|2500,00|D|||20240315||
+ACH|Achats|AC0002|20240620|60200|Achats matières|||FA00004|20240615|Matières premières|800,00|D|||20240620||
+ACH|Achats|AC0002|20240620|401000|Fournisseur Martin|||FA00004|20240615|Matières premières|800,00|C|||20240620||

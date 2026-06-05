@@ -1,0 +1,47 @@
+{
+  "name": "@lasocietenouvelle/fec-reader",
+  "version": "1.0.0",
+  "description": "FEC parser — French accounting entries flat files (Fichier des Écritures Comptables)",
+  "keywords": [
+    "fec",
+    "accounting",
+    "france",
+    "dgfip",
+    "comptabilite",
+    "parser",
+    "flat-file",
+    "entries"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "La Société Nouvelle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/La-Societe-Nouvelle/fec-reader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/La-Societe-Nouvelle/fec-reader/issues"
+  },
+  "homepage": "https://github.com/La-Societe-Nouvelle/fec-reader#readme",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "types": "./src/index.d.ts"
+    }
+  },
+  "files": [
+    "src/"
+  ],
+  "scripts": {
+    "test": "vitest run --reporter=verbose"
+  },
+  "devDependencies": {
+    "docx": "^9.7.1",
+    "vitest": "^4.1.2"
+  }
+}

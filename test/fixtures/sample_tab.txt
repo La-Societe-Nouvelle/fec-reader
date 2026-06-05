@@ -1,0 +1,8 @@
+JournalCode	JournalLib	EcritureNum	EcritureDate	CompteNum	CompteLib	CompAuxNum	CompAuxLib	PieceRef	PieceDate	EcritureLib	Debit	Credit	EcritureLet	DateLet	ValidDate	Montantdevise	Idevise
+ACH	Achats	AC0001	20240115	60600	Fournitures admin.			FA00001	20240110	Achat fournitures	1200,00	0,00			20240115		
+ACH	Achats	AC0001	20240115	44566	TVA déductible			FA00001	20240110	Achat fournitures	240,00	0,00			20240115		
+ACH	Achats	AC0001	20240115	401000	Fournisseur Dupont	F001	Dupont SARL	FA00001	20240110	Achat fournitures	0,00	1440,00			20240115		
+VTE	Ventes	VT0001	20241231	411000	Client Martin	C001	Martin SAS	FA00002	20241220	Vente produits	1200,00	0,00			20241231		
+VTE	Ventes	VT0001	20241231	70600	Ventes produits			FA00002	20241220	Vente produits	0,00	1200,00			20241231		
+OD	Opérations Diverses	OD0001	20241231	2813	Amort. matériel			OD00001	20241231	Amortissement matériel	0,00	500,00			20241231		
+OD	Opérations Diverses	OD0001	20241231	213	Matériel de bureau			OD00001	20241231	Amortissement matériel	500,00	0,00			20241231		
