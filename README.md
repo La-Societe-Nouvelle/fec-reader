@@ -1,6 +1,8 @@
 # @lasocietenouvelle/fec-reader
 
-Parser de fichiers FEC — **Fichier des Écritures Comptables** 
+[![npm](https://img.shields.io/npm/v/@lasocietenouvelle/fec-reader)](https://www.npmjs.com/package/@lasocietenouvelle/fec-reader)
+
+Parser de fichiers FEC — **Fichier des Écritures Comptables**
 
 Transforme un FEC brut en structure JSON exploitable : journaux, écritures groupées, comptes, période comptable.
 
@@ -16,7 +18,7 @@ Le FEC est un fichier normalisé produit par les logiciels de comptabilité et r
 npm install @lasocietenouvelle/fec-reader
 ```
 
-Requiert **Node.js ≥ 20**.
+Requiert **Node.js ≥ 20**. Package en **ES Modules uniquement** (`"type": "module"` dans votre `package.json`).
 
 ---
 
@@ -57,88 +59,15 @@ reader.onload = (e) => {
 
 ---
 
-## Structure de sortie
-
-```js
-{
-  books: {
-    "ACH": {
-      label: "Achats",           // Libellé du journal
-      type: "ACHATS",            // Type détecté (voir ci-dessous)
-      lineCount: 142,            // Nombre total de lignes
-      lastDate: "20241231",      // Dernière EcritureDate (YYYYMMDD)
-      entries: {
-        "AC0001": [              // Clé = EcritureNum brut (format selon logiciel source)
-          { JournalCode, JournalLib, EcritureNum, EcritureDate,
-            CompteNum, CompteLib, CompAuxNum, CompAuxLib,
-            PieceRef, PieceDate, EcritureLib,
-            Debit,   // number
-            Credit,  // number
-            EcritureLet, DateLet, ValidDate, Montantdevise, Idevise }
-        ]
-      }
-    }
-  },
-  meta: {
-    accounts: {
-      "213100": {
-        accountNum: "213100",
-        accountLib: "Bâtiment",
-        // Présent si un compte d'amortissement correspondant est trouvé :
-        amortisationAccountNum: "281310",
-        amortisationAccountLib: "Amort. bâtiment"
-      },
-      "281310": {
-        accountNum: "281310",
-        accountLib: "Amort. bâtiment",
-        directMatching: true,       // false si aucun compte d'actif trouvé
-        assetAccountNum: "213100",
-        assetAccountLib: "Bâtiment"
-      },
-      // Comptes de dépréciation (39x) → même logique, clé depreciationAccountNum :
-      "391000": {
-        accountNum: "391000",
-        accountLib: "Dépréc. matières premières",
-        directMatching: true,
-        assetAccountNum: "310000",
-        assetAccountLib: "Matières premières"
-      }
-      // Quand directMatching: false, assetAccountNum est absent du JSON
-      // (les clés undefined sont supprimées par JSON.stringify)
-    },
-    accountsAux: {
-      "F001": { accountNum: "F001", accountLib: "Dupont SARL" }
-    },
-    period: {
-      firstDate: "20240101",  // YYYYMMDD
-      lastDate:  "20241231"   // YYYYMMDD
-    }
-  }
-}
-```
-
-### Types de journaux
-
-| Type | Description |
-|------|-------------|
-| `ANOUVEAUX` | À-nouveaux |
-| `ACHATS` | Achats |
-| `VENTES` | Ventes |
-| `OPERATIONS` | Opérations diverses |
-| `AUTRE` | Non reconnu |
-
----
-
 ## Formats acceptés
 
 | Critère | Valeurs acceptées |
 |---------|-------------------|
 | Extensions | `.txt`, `.csv` |
-| Encodage | Auto-détecté — UTF-8 (avec ou sans BOM), ISO 8859-15, ASCII (spec DGFiP art. A 47 A-1 LPF) |
+| Encodage | Auto-détecté — UTF-8 (avec ou sans BOM), Windows-1252 / ISO 8859-15, ASCII (spec DGFiP art. A 47 A-1 LPF) |
 | Séparateur | Tabulation `\t` ou pipe `\|` |
-| Colonnes | Standard Débit/Crédit ou variante Montant/Sens |
-
-**Exemples concrets :**
+| Colonnes montant | Débit / Crédit (format standard) ou Montant / Sens (format alternatif — converti automatiquement) |
+| Colonnes devise | `MontantDevise` ou `Montantdevise`, `IDevise` ou `Idevise` |
 
 **Format standard (Débit/Crédit) :**
 ```
@@ -162,27 +91,39 @@ Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 
 ### `FECReader(input)`
 
-Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dessus.
+Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dessous.
 
-- `input` — `Buffer | ArrayBuffer | Uint8Array` — contenu brut du fichier, encodage auto-détecté
-- Lève une `Error` si le séparateur n'est pas reconnu ou si des colonnes obligatoires sont manquantes
+**Paramètre :**
+
+| Nom | Type | Description |
+|-----|------|-------------|
+| `input` | `Buffer \| ArrayBuffer \| Uint8Array` | Contenu brut du fichier FEC — encodage auto-détecté |
+
+**Retour :** un objet `FECResult` contenant `books` et `meta` (voir [Structure de sortie](#structure-de-sortie)).
+
+**Erreurs levées :**
+
+| Condition | Message |
+|-----------|---------|
+| Séparateur non reconnu | `Séparateur non reconnu (attendu : tabulation ou pipe)` |
+| Colonnes obligatoires manquantes | `Fichier erroné (libellé(s) manquant(s) : <colonnes>)` |
+| Ligne incomplète | `Erreur - Ligne incomplète (<numéro de ligne>)` |
+
+---
 
 ### `mapAssetAccounts(accounts)`
 
 Enrichit un plan de comptes avec les correspondances entre comptes d'actif et leurs comptes d'amortissement ou de dépréciation associés.
 Utilisé en interne par `FECReader`, mais exporté pour un usage autonome.
 
-Le FEC contient typiquement plusieurs catégories de comptes :
-- **À-nouveaux** (journal AN) — montants initiaux d'immobilisations (20x–27x), amortissements (28x–29x), stocks (31x–37x)
-- **Immobilisations** (20x–27x) et **amortissements** (28x–29x) — acquisitions, productions, via fournisseurs (40x)
-- **Stocks** (31x–37x) et **dépréciations de stocks** (39x)
-- **Charges externes** (60x–62x) — détail par fournisseur
-- **Production** (70x–72x) — ventes, variations de stocks, immobilisations produites
-- **Formation** — taxe d'apprentissage et participation à la formation professionnelle
+**Paramètre :**
 
-`mapAssetAccounts` établit automatiquement les liens entre comptes d'actif (2x, 3x) et leurs comptes d'amortissement ou dépréciation associés (28x, 39x), en se basant sur la concordance des numéros de compte.
+| Nom | Type | Description |
+|-----|------|-------------|
+| `accounts` | `Record<string, { accountNum, accountLib }>` | Dictionnaire de comptes indexé par numéro |
 
-**Exemple d'utilisation :**
+**Retour :** le même dictionnaire enrichi avec `directMatching`, `assetAccountNum`, etc.
+
 ```js
 import { mapAssetAccounts } from '@lasocietenouvelle/fec-reader';
 
@@ -203,9 +144,78 @@ console.log(enrichedAccounts['2813']);
 // }
 ```
 
-**Paramètres :**
-- `accounts` — `Object` — dictionnaire `{ [accountNum]: { accountNum, accountLib } }`
-- **Retourne** le même dictionnaire enrichi avec `directMatching`, `assetAccountNum`, etc.
+---
+
+## Structure de sortie
+
+### `FECResult`
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `books` | `Record<string, FECBook>` | Journaux comptables indexés par code journal |
+| `meta.accounts` | `Record<string, FECAccount>` | Comptes généraux enrichis |
+| `meta.accountsAux` | `Record<string, FECAccount>` | Comptes auxiliaires (tiers) |
+| `meta.period.firstDate` | `string \| null` | Date de la première écriture (YYYYMMDD) |
+| `meta.period.lastDate` | `string \| null` | Date de la dernière écriture (YYYYMMDD) |
+
+### `FECBook`
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `label` | `string` | Libellé du journal |
+| `type` | `BookType` | Type classifié (voir [Classification des journaux](#classification-des-journaux)) |
+| `lineCount` | `number` | Nombre total de lignes d'écriture |
+| `lastDate` | `string` | Date de la dernière écriture (YYYYMMDD) |
+| `entries` | `Record<string, FECRow[]>` | Écritures regroupées par numéro d'écriture |
+
+### `FECRow`
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `JournalCode` | `string` | Code journal |
+| `JournalLib` | `string` | Libellé journal |
+| `EcritureNum` | `string` | Numéro d'écriture |
+| `EcritureDate` | `string` | Date d'écriture (YYYYMMDD) |
+| `CompteNum` | `string` | Numéro de compte général |
+| `CompteLib` | `string` | Libellé du compte général |
+| `CompAuxNum` | `string?` | Numéro de compte auxiliaire |
+| `CompAuxLib` | `string?` | Libellé du compte auxiliaire |
+| `PieceRef` | `string` | Référence de pièce |
+| `PieceDate` | `string` | Date de pièce (YYYYMMDD) |
+| `EcritureLib` | `string` | Libellé de l'écriture |
+| `Debit` | `number` | Montant débit (converti depuis Montant/Sens si nécessaire) |
+| `Credit` | `number` | Montant crédit (converti depuis Montant/Sens si nécessaire) |
+| `EcritureLet` | `string?` | Lettrage de l'écriture |
+| `DateLet` | `string?` | Date de lettrage |
+| `ValidDate` | `string?` | Date de validation |
+| `Montantdevise` | `string?` | Montant en devise d'origine |
+| `Idevise` | `string?` | Identifiant de devise |
+
+### `FECAccount`
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `accountNum` | `string` | Numéro de compte |
+| `accountLib` | `string` | Libellé du compte |
+| `directMatching` | `boolean?` | Vrai si un compte actif correspondant a été trouvé |
+| `assetAccountNum` | `string?` | Numéro du compte d'actif associé |
+| `assetAccountLib` | `string?` | Libellé du compte d'actif associé |
+| `amortisationAccountNum` | `string?` | Numéro du compte d'amortissement lié |
+| `depreciationAccountNum` | `string?` | Numéro du compte de dépréciation lié |
+
+---
+
+## Classification des journaux
+
+Chaque journal est automatiquement classifié selon son code et son libellé :
+
+| Type | Codes reconnus | Libellés reconnus |
+|------|---------------|-------------------|
+| `ANOUVEAUX` | `AN`, `RAN`, `AA`, `AD` | `A NOUVEAUX`, `A NOUVEAU` |
+| `VENTES` | `VT`, `VE` | `VENTES` |
+| `ACHATS` | `HA` | `ACHATS`, `BANQUE` |
+| `OPERATIONS` | `OD`, `ODA`, `INV` | *(aucun libellé fixe)* |
+| `AUTRE` | — | Tout journal non classifié ci-dessus |
 
 ---
 
@@ -222,6 +232,3 @@ Pour signaler un bug, demander une fonctionnalité ou contribuer au projet :
 - [Consulter le code source](https://github.com/lasocietenouvelle/fec-reader)
 
 Les contributions sont les bienvenues ! Veuillez ouvrir une issue avant de proposer une pull request pour discuter des changements.
-
----
-
