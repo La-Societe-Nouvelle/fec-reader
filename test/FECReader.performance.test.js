@@ -33,7 +33,7 @@ describe('performance', () => {
     const result = FECReader(largeFEC);
     const end = performance.now();
 
-    expect(result.books['ACH'].lineCount).toBe(1000);
+    expect(result.journaux['ACH'].nbLignes).toBe(1000);
     console.log(`Parsing 1000 rows took ${end - start}ms`);
   });
 
@@ -43,7 +43,7 @@ describe('performance', () => {
     const result = FECReader(largeFEC);
     const end = performance.now();
 
-    expect(result.books['ACH'].lineCount).toBe(10000);
+    expect(result.journaux['ACH'].nbLignes).toBe(10000);
     console.log(`Parsing 10000 rows took ${end - start}ms`);
   });
 });

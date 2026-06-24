@@ -1,18 +1,15 @@
 // La Société Nouvelle
 
-import booksProps from "./data/books.json" with { type: "json" };
-import { mapAssetAccounts } from './asset-mapping.js';
-
-const COLUMNS_PREFIX = [
+const COLONNES_PREFIXE = [
   "JournalCode", "JournalLib", "EcritureNum", "EcritureDate",
   "CompteNum",  "CompteLib",   "CompAuxNum",  "CompAuxLib",
   "PieceRef",   "PieceDate",   "EcritureLib",
 ];
-const COLUMNS_SUFFIX = [
-  "EcritureLet", "DateLet", "ValidDate", "Montantdevise", "Idevise",
+const COLONNES_SUFFIXE = [
+  "EcritureLet", "DateLet", "ValidDate", "MontantDevise", "IDevise",
 ];
-const COLUMNS_FEC                 = [...COLUMNS_PREFIX, "Debit",   "Credit",   ...COLUMNS_SUFFIX];
-const COLUMNS_FEC_WITH_DIRECTION  = [...COLUMNS_PREFIX, "Montant", "Sens",     ...COLUMNS_SUFFIX];
+const COLONNES_FEC            = [...COLONNES_PREFIXE, "Debit",   "Credit",   ...COLONNES_SUFFIXE];
+const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...COLONNES_SUFFIXE];
 
 /**
  * Parse a FEC file (Fichier des Écritures Comptables) and return structured data.
@@ -24,7 +21,7 @@ const COLUMNS_FEC_WITH_DIRECTION  = [...COLUMNS_PREFIX, "Montant", "Sens",     .
  *   - string         : passed through as-is (no encoding conversion)
  *
  * Encoding detection order (spec DGFiP : ASCII | ISO 8859-15 | UTF-8) :
- *   1. UTF-8 BOM (EF BB BF) → UTF-8
+ *   1. UTF-8 BOM (EF BB BF) → UTF-8 BOM
  *   2. Valid UTF-8 (no replacement chars) → UTF-8
  *   3. Fallback → Windows-1252 (superset of ISO-8859-15/ISO-8859-1, covers Sage/EBP/Ciel)
  *
@@ -33,15 +30,14 @@ const COLUMNS_FEC_WITH_DIRECTION  = [...COLUMNS_PREFIX, "Montant", "Sens",     .
  *   - Columns   : standard Débit/Crédit or variant Montant/Sens
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
- * @returns {{ books: Object, meta: Object }}
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
  * @throws {Error} If the file has an unrecognized separator or missing columns
  */
 export function FECReader(input) {
-  const content = decodeInput(input);
-  const { separator, header, format, indexColumns } = parseHeader(content);
-  const rows = content.slice(content.indexOf("\n") + 1).split("\n");
-  const { journals, accounts, accountsAux, firstDate, lastDate } = collectData(rows, separator, header, indexColumns, format);
-  return buildOutput(journals, accounts, accountsAux, firstDate, lastDate);
+  const { contenu, encodage } = decodeInput(input);
+  const { separateur, entete, format, indexColonnes, colonnes } = parseHeader(contenu);
+  const { journaux, comptes, comptesAux, premiereDate, derniereDate } = collectData(contenu, separateur, entete, indexColonnes, colonnes, format);
+  return buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format);
 }
 
 /**
@@ -49,10 +45,10 @@ export function FECReader(input) {
  * Strings are passed through without conversion.
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
- * @returns {string}
+ * @returns {{ contenu: string, encodage: string }}
  */
 function decodeInput(input) {
-  if (typeof input === "string") return input;
+  if (typeof input === "string") return { contenu: input, encodage: "UTF-8" };
 
   let bytes;
   if (input instanceof Uint8Array) {
@@ -67,138 +63,185 @@ function decodeInput(input) {
 
   // UTF-8 BOM
   if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
-    return new TextDecoder("utf-8").decode(bytes.slice(3));
+    return { contenu: new TextDecoder("utf-8").decode(bytes.slice(3)), encodage: "UTF-8 BOM" };
   }
 
-  // Valid UTF-8 — no replacement character means no invalid sequences
-  const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  if (!utf8.includes("�")) return utf8;
-
-  // Fallback: Windows-1252 — compatible avec ISO 8859-15 (norme DGFiP).
-  return new TextDecoder("windows-1252").decode(bytes);
+  // Valid UTF-8 — strict decode throws on any invalid byte sequence
+  try {
+    const utf8 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return { contenu: utf8, encodage: "UTF-8" };
+  } catch {
+    // Fallback: Windows-1252 — compatible avec ISO 8859-15 (norme DGFiP).
+    return { contenu: new TextDecoder("windows-1252").decode(bytes), encodage: "Windows-1252" };
+  }
 }
 
 /**
  * Extract separator, column list, format and index map from the first line of the file.
  * Throws if the separator is unrecognized or required columns are missing.
  *
- * @param {string} content
- * @returns {{ separator: string, header: string[], format: string, indexColumns: Object }}
+ * @param {string} contenu
+ * @returns {{ separateur: string, entete: string[], format: string, indexColonnes: Object, colonnes: Array }}
  */
-function parseHeader(content) {
-  const firstLine = content.slice(0, content.indexOf("\n"));
-  const separator = getSeparator(firstLine);
+function parseHeader(contenu) {
+  const premiereLigne = contenu.slice(0, contenu.indexOf("\n"));
+  const separateur = getSeparator(premiereLigne);
 
-  const header = firstLine
+  const entete = premiereLigne
     .replaceAll("\r", "")
-    .replace("MontantDevise", "Montantdevise")
-    .replace("IDevise", "Idevise")
-    .split(separator);
+    .replace("Montantdevise", "MontantDevise")
+    .replace("Idevise", "IDevise")
+    .split(separateur);
 
-  const format = header.includes("Montant") ? "withDirection" : "default";
-  const expectedColumns = format === "default" ? COLUMNS_FEC : COLUMNS_FEC_WITH_DIRECTION;
+  const format = entete.includes("Montant") ? "avecSens" : "standard";
+  const colonnesAttendues = format === "standard" ? COLONNES_FEC : COLONNES_FEC_AVEC_SENS;
 
-  const missingColumns = expectedColumns.filter(col => !header.includes(col));
-  if (missingColumns.length > 0) {
-    throw new Error(`Fichier erroné (libellé(s) manquant(s) : ${missingColumns.join(', ')})`);
+  const colonnesManquantes = colonnesAttendues.filter(col => !entete.includes(col));
+  if (colonnesManquantes.length > 0) {
+    throw new Error(`Fichier erroné (libellé(s) manquant(s) : ${colonnesManquantes.join(', ')})`);
   }
 
-  const indexColumns = Object.fromEntries(header.map((col, idx) => [col, idx]));
+  const colonnes      = entete.map((col, idx) => [col, idx]);
+  const indexColonnes = Object.fromEntries(colonnes);
 
-  return { separator, header, format, indexColumns };
+  return { separateur, entete, format, indexColonnes, colonnes };
 }
 
 /**
  * Iterate over all data rows and accumulate journals, accounts and period boundaries.
+ * Processes line-by-line via indexOf to avoid allocating a full split("\n") array.
  *
- * @param {string[]} rows
- * @param {string} separator
- * @param {string[]} header
- * @param {Object} indexColumns - Column name → index map
- * @param {string} format - 'default' | 'withDirection'
- * @returns {{ journals: Object, accounts: Object, accountsAux: Object, firstDate: string|null, lastDate: string|null }}
+ * @param {string} contenu
+ * @param {string} separateur
+ * @param {string[]} entete
+ * @param {Object} indexColonnes - Column name → index map
+ * @param {Array} colonnes - Pre-computed [col, idx] pairs for parseRow
+ * @param {string} format - 'standard' | 'avecSens'
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, premiereDate: string|null, derniereDate: string|null }}
  */
-function collectData(rows, separator, header, indexColumns, format) {
-  const journals = {};
-  const accounts = {};
-  const accountsAux = {};
-  let firstDate = null;
-  let lastDate = null;
+function collectData(contenu, separateur, entete, indexColonnes, colonnes, format) {
+  const journaux   = {};
+  const comptes    = {};
+  const comptesAux = {};
+  let premiereDate = null;
+  let derniereDate = null;
 
-  rows.forEach((rowString, index) => {
-    const row = rowString.replace("\r", "").split(separator);
+  const iJournalCode  = indexColonnes["JournalCode"];
+  const iJournalLib   = indexColonnes["JournalLib"];
+  const iEcritureNum  = indexColonnes["EcritureNum"];
+  const iEcritureDate = indexColonnes["EcritureDate"];
+  const iCompteNum    = indexColonnes["CompteNum"];
+  const iCompteLib    = indexColonnes["CompteLib"];
+  const iCompAuxNum   = indexColonnes["CompAuxNum"];
+  const iCompAuxLib   = indexColonnes["CompAuxLib"];
 
-    if (row.length !== header.length) {
-      if (rowString.trim() !== "") throw new Error(`Erreur - Ligne incomplète (${index + 2})`);
-      return;
+  const nettoyer = (s) => (s || "").replace(/^[\s"]+|[\s"]+$/g, "");
+
+  const premierSautLigne = contenu.indexOf("\n");
+  let debutLigne = premierSautLigne + 1;
+  let indiceLigne = 0;
+
+  while (debutLigne < contenu.length) {
+    let finLigne = contenu.indexOf("\n", debutLigne);
+    if (finLigne === -1) finLigne = contenu.length;
+
+    const ligneBrute = contenu.slice(debutLigne, finLigne).replace("\r", "");
+    debutLigne = finLigne + 1;
+    indiceLigne++;
+
+    if (ligneBrute === "") continue;
+
+    const champs = ligneBrute.split(separateur);
+
+    // Tolerate lines missing 1-2 trailing columns (some software omits final separator when no currency)
+    if (champs.length < entete.length && champs.length >= entete.length - 2) {
+      while (champs.length < entete.length) champs.push("");
     }
 
-    const rowData = parseRow(indexColumns, row, format);
-    const { JournalCode, JournalLib, EcritureNum, EcritureDate, CompteNum, CompteLib, CompAuxNum, CompAuxLib } = rowData;
+    if (champs.length !== entete.length) {
+      const manquantes = champs.length < entete.length ? entete.slice(champs.length) : [];
+      const enTrop     = champs.length > entete.length ? champs.length - entete.length : 0;
+      let message;
+      if (manquantes.length >= entete.length / 2) {
+        message = `Le fichier FEC semble corrompu ou mal exporté (ligne ${indiceLigne + 1} : ${champs.length} colonne(s) lue(s) sur ${entete.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
+      } else if (manquantes.length > 0) {
+        message = `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne ${indiceLigne + 1} : ${manquantes.join(", ")}. Vérifiez le format d'export.`;
+      } else {
+        message = `Fichier FEC invalide — trop de colonnes à la ligne ${indiceLigne + 1} (${enTrop} colonne(s) en trop). Vérifiez le format d'export.`;
+      }
+      throw new Error(message);
+    }
+
+    const donnees = parseRow(colonnes, champs, format, nettoyer);
+
+    const journalCode  = nettoyer(champs[iJournalCode]);
+    const journalLib   = nettoyer(champs[iJournalLib]);
+    const ecritureNum  = nettoyer(champs[iEcritureNum]);
+    const ecritureDate = nettoyer(champs[iEcritureDate]);
+    const compteNum    = nettoyer(champs[iCompteNum]);
+    const compteLib    = nettoyer(champs[iCompteLib]);
+    const compAuxNum   = nettoyer(champs[iCompAuxNum]);
+    const compAuxLib   = nettoyer(champs[iCompAuxLib]);
 
     // Journal
-    if (!(JournalCode in journals)) {
-      journals[JournalCode] = {
-        label: JournalLib,
-        type: classifyBook(JournalCode, JournalLib),
-        lineCount: 0,
-        lastDate: null,
-        entries: {},
+    if (!(journalCode in journaux)) {
+      journaux[journalCode] = {
+        libelle:      journalLib,
+        nbLignes:     0,
+        derniereDate: null,
+        ecritures:    {},
       };
     }
-    const journal = journals[JournalCode];
-    if (!journal.entries[EcritureNum]) journal.entries[EcritureNum] = [];
-    journal.entries[EcritureNum].push(rowData);
-    journal.lineCount++;
-    if (journal.lastDate === null || EcritureDate > journal.lastDate) journal.lastDate = EcritureDate;
+    const journal = journaux[journalCode];
+    if (!journal.ecritures[ecritureNum]) journal.ecritures[ecritureNum] = [];
+    journal.ecritures[ecritureNum].push(donnees);
+    journal.nbLignes++;
+    if (journal.derniereDate === null || ecritureDate > journal.derniereDate) journal.derniereDate = ecritureDate;
 
-    // Accounts
-    if (!(CompteNum in accounts)) {
-      accounts[CompteNum] = { accountNum: CompteNum, accountLib: CompteLib };
+    // Comptes
+    if (!(compteNum in comptes)) {
+      comptes[compteNum] = { compteLib };
     }
-    if (CompAuxNum && !(CompAuxNum in accountsAux)) {
-      accountsAux[CompAuxNum] = { accountNum: CompAuxNum, accountLib: CompAuxLib };
+    if (compAuxNum && !(compAuxNum in comptesAux)) {
+      comptesAux[compAuxNum] = { compteLib: compAuxLib };
     }
 
-    // Period
-    if (firstDate === null || EcritureDate < firstDate) firstDate = EcritureDate;
-    if (lastDate === null || EcritureDate > lastDate) lastDate = EcritureDate;
-  });
+    // Période
+    if (premiereDate === null || ecritureDate < premiereDate) premiereDate = ecritureDate;
+    if (derniereDate === null || ecritureDate > derniereDate) derniereDate = ecritureDate;
+  }
 
-  return { journals, accounts, accountsAux, firstDate, lastDate };
+  return { journaux, comptes, comptesAux, premiereDate, derniereDate };
 }
 
 /**
  * Assemble the final output structure from accumulated data.
- * Applies asset account mapping. All dates are kept in source format (YYYYMMDD).
+ * All dates are kept in source format (YYYYMMDD).
  *
- * @param {Object} journals
- * @param {Object} accounts
- * @param {Object} accountsAux
- * @param {string|null} firstDate - Earliest EcritureDate seen (YYYYMMDD)
- * @param {string|null} lastDate  - Latest EcritureDate seen (YYYYMMDD)
- * @returns {{ books: Object, meta: Object }}
+ * @param {Object} journaux
+ * @param {Object} comptes
+ * @param {Object} comptesAux
+ * @param {string|null} premiereDate - Earliest EcritureDate seen (YYYYMMDD)
+ * @param {string|null} derniereDate - Latest EcritureDate seen (YYYYMMDD)
+ * @param {string} encodage - Detected encoding
+ * @param {string} separateur - Field separator used
+ * @param {string} format - 'standard' | 'avecSens'
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
  */
-function buildOutput(journals, accounts, accountsAux, firstDate, lastDate) {
-  const books = {};
-  for (const [code, journal] of Object.entries(journals)) {
-    books[code] = {
-      label: journal.label,
-      type: journal.type,
-      lineCount: journal.lineCount,
-      lastDate: journal.lastDate,
-      entries: journal.entries,
-    };
-  }
-
+function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format) {
   return {
-    books,
+    journaux,
+    comptes,
+    comptesAux,
     meta: {
-      accounts: mapAssetAccounts(accounts),
-      accountsAux,
-      period: {
-        firstDate,
-        lastDate,
+      periode: {
+        premiereDate,
+        derniereDate,
+      },
+      fichier: {
+        encodage,
+        separateur,
+        format,
       },
     },
   };
@@ -206,64 +249,51 @@ function buildOutput(journals, accounts, accountsAux, firstDate, lastDate) {
 
 /**
  * Parse a single data row into a keyed object.
- * Strips surrounding quotes and whitespace from each field.
- * Converts Montant/Sens to Debit/Credit for withDirection format.
+ * Uses pre-computed colonnes to avoid Object.entries() allocation on every call.
+ * Converts Montant/Sens to Debit/Credit for avecSens format.
  * Parses Debit and Credit as numbers.
  *
- * @param {Object} indexColumns - Column name → index map
- * @param {string[]} row
- * @param {string} format - 'default' | 'withDirection'
+ * @param {Array} colonnes - Pre-computed [col, idx] pairs from header
+ * @param {string[]} champs
+ * @param {string} format - 'standard' | 'avecSens'
+ * @param {Function} nettoyer - Field cleaner (strips quotes and whitespace)
  * @returns {Object}
  */
-function parseRow(indexColumns, row, format) {
-  const rowData = Object.fromEntries(
-    Object.entries(indexColumns).map(([col, idx]) => [
-      col,
-      row[idx]
-        .replace(/^"/, "")
-        .replace(/"$/, "")
-        .replace(/^\s+|\s+$/, ""),
-    ])
-  );
-
-  if (format === "withDirection") {
-    rowData.Debit = rowData.Sens === "D" ? rowData.Montant : "0,00";
-    rowData.Credit = rowData.Sens === "C" ? rowData.Montant : "0,00";
-    delete rowData.Montant;
-    delete rowData.Sens;
+function parseRow(colonnes, champs, format, nettoyer) {
+  const donnees = {};
+  for (const [col, idx] of colonnes) {
+    donnees[col] = nettoyer(champs[idx]);
   }
 
-  rowData.Debit = parseAmount(rowData.Debit);
-  rowData.Credit = parseAmount(rowData.Credit);
+  delete donnees.JournalCode;
+  delete donnees.JournalLib;
+  delete donnees.EcritureNum;
+  delete donnees.CompteLib;
+  delete donnees.CompAuxLib;
 
-  return rowData;
+  if (format === "avecSens") {
+    donnees.Debit  = donnees.Sens === "D" ? donnees.Montant : "0,00";
+    donnees.Credit = donnees.Sens === "C" ? donnees.Montant : "0,00";
+    delete donnees.Montant;
+    delete donnees.Sens;
+  }
+
+  donnees.Debit  = parseAmount(donnees.Debit);
+  donnees.Credit = parseAmount(donnees.Credit);
+
+  return donnees;
 }
 
 /**
  * Detect the field separator from the header line.
- * @param {string} firstLine
+ * @param {string} premiereLigne
  * @returns {'\t' | '|'}
- * @throws {string} If neither tab nor pipe is found
+ * @throws {Error} If neither tab nor pipe is found
  */
-function getSeparator(firstLine) {
-  if (firstLine.includes("\t")) return "\t";
-  if (firstLine.includes("|")) return "|";
+function getSeparator(premiereLigne) {
+  if (premiereLigne.includes("\t")) return "\t";
+  if (premiereLigne.includes("|")) return "|";
   throw new Error("Séparateur non reconnu (attendu : tabulation ou pipe)");
 }
 
 const parseAmount = (str) => parseFloat(str.replace(',', '.'));
-
-/**
- * Classify a journal by its code and label against known book types.
- * @param {string} bookCode
- * @param {string} bookLib
- * @returns {'ANOUVEAUX' | 'VENTES' | 'ACHATS' | 'OPERATIONS' | 'AUTRE'}
- */
-function classifyBook(bookCode, bookLib) {
-  const lib = bookLib.toUpperCase();
-  if (booksProps.ANOUVEAUX.codes.includes(bookCode) || booksProps.ANOUVEAUX.labels.includes(lib)) return "ANOUVEAUX";
-  if (booksProps.VENTES.codes.includes(bookCode)    || booksProps.VENTES.labels.includes(lib))    return "VENTES";
-  if (booksProps.ACHATS.codes.includes(bookCode)    || booksProps.ACHATS.labels.includes(lib))    return "ACHATS";
-  if (booksProps.OPERATIONS.codes.includes(bookCode)|| booksProps.OPERATIONS.labels.includes(lib))return "OPERATIONS";
-  return "AUTRE";
-}

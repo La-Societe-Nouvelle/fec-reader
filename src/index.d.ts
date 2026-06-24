@@ -1,24 +1,11 @@
-export interface FECAccount {
-  accountNum: string;
-  accountLib: string;
-  directMatching?: boolean;
-  assetAccountNum?: string;
-  assetAccountLib?: string;
-  amortisationAccountNum?: string;
-  amortisationAccountLib?: string;
-  depreciationAccountNum?: string;
-  depreciationAccountLib?: string;
+export interface Compte {
+  compteLib: string;
 }
 
-export interface FECRow {
-  JournalCode: string;
-  JournalLib: string;
-  EcritureNum: string;
+export interface LigneEcriture {
   EcritureDate: string;
   CompteNum: string;
-  CompteLib: string;
   CompAuxNum: string;
-  CompAuxLib: string;
   PieceRef: string;
   PieceDate: string;
   EcritureLib: string;
@@ -27,45 +14,41 @@ export interface FECRow {
   EcritureLet: string;
   DateLet: string;
   ValidDate: string;
-  Montantdevise: string;
-  Idevise: string;
+  MontantDevise: string;
+  IDevise: string;
 }
 
-export type BookType = 'ANOUVEAUX' | 'VENTES' | 'ACHATS' | 'OPERATIONS' | 'AUTRE';
-
-export interface FECBook {
-  label: string;
-  type: BookType;
-  lineCount: number;
-  lastDate: string;
-  entries: Record<string, FECRow[]>;
+export interface Journal {
+  libelle: string;
+  nbLignes: number;
+  derniereDate: string;
+  ecritures: Record<string, LigneEcriture[]>;
 }
 
-export interface FECResult {
-  books: Record<string, FECBook>;
+export interface ResultatFEC {
+  journaux: Record<string, Journal>;
+  comptes: Record<string, Compte>;
+  comptesAux: Record<string, Compte>;
   meta: {
-    accounts: Record<string, FECAccount>;
-    accountsAux: Record<string, { accountNum: string; accountLib: string }>;
-    period: {
-      firstDate: string | null;
-      lastDate: string | null;
+    periode: {
+      premiereDate: string | null;
+      derniereDate: string | null;
+    };
+    fichier: {
+      encodage: 'UTF-8' | 'UTF-8 BOM' | 'Windows-1252';
+      separateur: '\t' | '|';
+      format: 'standard' | 'avecSens';
     };
   };
 }
 
 /**
- * Parse a FEC file (Fichier des Écritures Comptables) and return structured data.
+ * Parse un fichier FEC (Fichier des Écritures Comptables) et retourne les données structurées.
  *
- * Accepts a pre-decoded string (backward compatible) or raw bytes (Buffer /
- * ArrayBuffer / Uint8Array). When bytes are provided the encoding is
- * auto-detected: UTF-8 BOM → UTF-8 → Windows-1252 fallback.
+ * Accepte une chaîne pré-décodée ou des octets bruts (Buffer / ArrayBuffer / Uint8Array).
+ * Lorsque des octets sont fournis, l'encodage est auto-détecté :
+ * BOM UTF-8 → UTF-8 → Windows-1252 (fallback).
  *
- * @throws {Error} If separator is unrecognized or required columns are missing
+ * @throws {Error} Si le séparateur n'est pas reconnu ou si des colonnes obligatoires sont absentes
  */
-export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array): FECResult;
-
-/**
- * Enrich amortisation/depreciation accounts (28x, 39x) with references
- * to their corresponding asset accounts based on account number prefix matching.
- */
-export function mapAssetAccounts(accounts: Record<string, FECAccount>): Record<string, FECAccount>;
+export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array): ResultatFEC;
