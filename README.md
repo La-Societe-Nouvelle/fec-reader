@@ -153,7 +153,7 @@ Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureNum`, 
 
 ## Licence
 
-MIT — [La Société Nouvelle](https://lasocietenouvelle.org)
+EUPL-1.2 — [La Société Nouvelle](https://lasocietenouvelle.org)
 
 ---
 
