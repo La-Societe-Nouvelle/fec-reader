@@ -25,7 +25,7 @@ export interface Journal {
   ecritures: Record<string, LigneEcriture[]>;
 }
 
-export interface ResultatFEC {
+export interface FECData {
   journaux: Record<string, Journal>;
   comptes: Record<string, Compte>;
   comptesAux: Record<string, Compte>;
@@ -51,4 +51,4 @@ export interface ResultatFEC {
  *
  * @throws {Error} Si le séparateur n'est pas reconnu ou si des colonnes obligatoires sont absentes
  */
-export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array): ResultatFEC;
+export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array): FECData;

@@ -84,7 +84,7 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 |-----|------|-------------|
 | `input` | `string \| Buffer \| ArrayBuffer \| Uint8Array` | Contenu du fichier FEC — les octets bruts sont auto-décodés |
 
-**Retour :** un objet [`ResultatFEC`](#resultatfec).
+**Retour :** un objet [`FECData`](#fecdata).
 
 **Erreurs levées :**
 
@@ -101,7 +101,7 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 
 ## Structure de sortie
 
-### `ResultatFEC`
+### `FECData`
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
