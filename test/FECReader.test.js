@@ -114,21 +114,21 @@ describe('FECReader', () => {
 
     it('periode.premiereDate et derniereDate sont au format YYYYMMDD', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.periode.premiereDate).toMatch(/^\d{8}$/);
-      expect(result.meta.periode.derniereDate).toMatch(/^\d{8}$/);
+      expect(result.meta.periode.dateDebut).toMatch(/^\d{8}$/);
+      expect(result.meta.periode.dateFin).toMatch(/^\d{8}$/);
     });
 
     it('periode couvre bien l\'ensemble du fichier', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.periode.premiereDate).toBe('20240115');
-      expect(result.meta.periode.derniereDate).toBe('20241231');
+      expect(result.meta.periode.dateDebut).toBe('20240115');
+      expect(result.meta.periode.dateFin).toBe('20241231');
     });
 
     it('fichier sans lignes de données retourne des journaux vides', () => {
       const result = FECReader(HEADER + '\n');
       expect(result.journaux).toEqual({});
-      expect(result.meta.periode.premiereDate).toBeNull();
-      expect(result.meta.periode.derniereDate).toBeNull();
+      expect(result.meta.periode.dateDebut).toBeNull();
+      expect(result.meta.periode.dateFin).toBeNull();
     });
   });
 
@@ -242,8 +242,8 @@ describe('FECReader', () => {
     it('fichier avec seulement l\'en-tête et une ligne vide', () => {
       const result = FECReader(HEADER + '\n');
       expect(result.journaux).toEqual({});
-      expect(result.meta.periode.premiereDate).toBeNull();
-      expect(result.meta.periode.derniereDate).toBeNull();
+      expect(result.meta.periode.dateDebut).toBeNull();
+      expect(result.meta.periode.dateFin).toBeNull();
     });
 
     it('fichier vide lève une erreur', () => {

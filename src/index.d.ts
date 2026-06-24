@@ -31,8 +31,8 @@ export interface FECData {
   comptesAux: Record<string, Compte>;
   meta: {
     periode: {
-      premiereDate: string | null;
-      derniereDate: string | null;
+      dateDebut: string | null;
+      dateFin: string | null;
     };
     fichier: {
       encodage: 'UTF-8' | 'UTF-8 BOM' | 'Windows-1252';

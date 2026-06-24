@@ -23,8 +23,8 @@ console.log('  Séparateur :', result.meta.fichier.separateur === '\t' ? 'tabula
 console.log('  Format     :', result.meta.fichier.format);
 
 console.log('\n=== Période ===');
-console.log('  Première date :', result.meta.periode.premiereDate);
-console.log('  Dernière date :', result.meta.periode.derniereDate);
+console.log('  Début exercice :', result.meta.periode.dateDebut);
+console.log('  Fin exercice   :', result.meta.periode.dateFin);
 
 console.log('\n=== Journaux ===', `(${nbJournaux} journaux, ${nbEcritures} lignes au total)`);
 for (const [code, journal] of Object.entries(result.journaux)) {

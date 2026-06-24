@@ -34,7 +34,7 @@ try {
   const result = FECReader(buffer);  // encodage auto-détecté
 
   console.log(result.meta.periode);
-  // { premiereDate: '20240101', derniereDate: '20241231' }
+  // { dateDebut: '20240101', dateFin: '20241231' }
 
   console.log(Object.keys(result.journaux));
   // [ 'AN', 'ACH', 'VTE', 'OD' ]
@@ -108,8 +108,8 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 | `journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
 | `comptes` | `Record<string, Compte>` | Comptes généraux indexés par numéro de compte |
 | `comptesAux` | `Record<string, Compte>` | Comptes auxiliaires (tiers) indexés par numéro |
-| `meta.periode.premiereDate` | `string \| null` | Date de la première écriture (YYYYMMDD) |
-| `meta.periode.derniereDate` | `string \| null` | Date de la dernière écriture (YYYYMMDD) |
+| `meta.periode.dateDebut` | `string \| null` | Date de début de période (YYYYMMDD) |
+| `meta.periode.dateFin` | `string \| null` | Date de fin de période (YYYYMMDD) |
 | `meta.fichier.encodage` | `string` | Encodage détecté (`UTF-8`, `UTF-8 BOM`, `Windows-1252`) |
 | `meta.fichier.separateur` | `string` | Séparateur détecté (`\t` ou `\|`) |
 | `meta.fichier.format` | `string` | Format détecté (`standard` ou `avecSens`) |

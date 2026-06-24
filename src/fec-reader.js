@@ -235,8 +235,8 @@ function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, 
     comptesAux,
     meta: {
       periode: {
-        premiereDate,
-        derniereDate,
+        dateDebut: premiereDate,
+        dateFin: derniereDate,
       },
       fichier: {
         encodage,
