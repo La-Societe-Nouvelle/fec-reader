@@ -60,9 +60,10 @@ describe('FECReader — détection d\'encodage', () => {
   it('accepte un Buffer UTF-8 et préserve les accents', () => {
     const buffer = Buffer.from(FEC_TEXT, 'utf8');
     const result = FECReader(buffer);
-    expect(result.journaux['ACH']).toBeDefined();
-    const entry = Object.values(result.journaux['ACH'].ecritures)[0][0];
-    expect(result.comptes[entry.CompteNum].compteLib).toBe('Fournitures générales');
+    expect(result.Journaux['ACH']).toBeDefined();
+    const ecritures = Object.values(result.Journaux['ACH'].Ecritures);
+    const entry = ecritures.flatMap(e => e.Lignes)[0];
+    expect(result.Comptes[entry.CompteNum].Libelle).toBe('Fournitures générales');
     expect(entry.EcritureLib).toBe('Achat équipement');
   });
 
@@ -71,17 +72,19 @@ describe('FECReader — détection d\'encodage', () => {
     const content = Buffer.from(FEC_TEXT, 'utf8');
     const buffer = Buffer.concat([bom, content]);
     const result = FECReader(buffer);
-    expect(result.journaux['ACH']).toBeDefined();
-    const entry = Object.values(result.journaux['ACH'].ecritures)[0][0];
-    expect(result.comptes[entry.CompteNum].compteLib).toBe('Fournitures générales');
+    expect(result.Journaux['ACH']).toBeDefined();
+    const ecritures = Object.values(result.Journaux['ACH'].Ecritures);
+    const entry = ecritures.flatMap(e => e.Lignes)[0];
+    expect(result.Comptes[entry.CompteNum].Libelle).toBe('Fournitures générales');
   });
 
   it('accepte un Buffer Windows-1252 et préserve les accents', () => {
     const buffer = Buffer.from(toWindows1252(FEC_TEXT));
     const result = FECReader(buffer);
-    expect(result.journaux['ACH']).toBeDefined();
-    const entry = Object.values(result.journaux['ACH'].ecritures)[0][0];
-    expect(result.comptes[entry.CompteNum].compteLib).toBe('Fournitures générales');
+    expect(result.Journaux['ACH']).toBeDefined();
+    const ecritures = Object.values(result.Journaux['ACH'].Ecritures);
+    const entry = ecritures.flatMap(e => e.Lignes)[0];
+    expect(result.Comptes[entry.CompteNum].Libelle).toBe('Fournitures générales');
     expect(entry.EcritureLib).toBe('Achat équipement');
   });
 
@@ -95,23 +98,24 @@ describe('FECReader — détection d\'encodage', () => {
     ].join(T);
     const buffer = Buffer.from(toWindows1252(fecAvecEuro));
     const result = FECReader(buffer);
-    const entry = Object.values(result.journaux['ACH'].ecritures)[0][0];
-    expect(result.comptes[entry.CompteNum].compteLib).toBe('Fournitures – bureau');
+    const ecritures = Object.values(result.Journaux['ACH'].Ecritures);
+    const entry = ecritures.flatMap(e => e.Lignes)[0];
+    expect(result.Comptes[entry.CompteNum].Libelle).toBe('Fournitures – bureau');
     expect(entry.EcritureLib).toBe('Achat €');
-    expect(result.meta.fichier.encodage).toBe('Windows-1252');
+    expect(result.Metadonnees.Fichier.Encodage).toBe('Windows-1252');
   });
 
   it('accepte un ArrayBuffer', () => {
     const buf = Buffer.from(FEC_TEXT, 'utf8');
     const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const result = FECReader(arrayBuffer);
-    expect(result.journaux['ACH']).toBeDefined();
+    expect(result.Journaux['ACH']).toBeDefined();
   });
 
   it('accepte un Uint8Array', () => {
     const uint8 = new TextEncoder().encode(FEC_TEXT);
     const result = FECReader(uint8);
-    expect(result.journaux['ACH']).toBeDefined();
+    expect(result.Journaux['ACH']).toBeDefined();
   });
 
   it('lève une erreur pour un type d\'entrée invalide', () => {

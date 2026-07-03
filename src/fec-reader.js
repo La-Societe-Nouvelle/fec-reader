@@ -247,9 +247,9 @@ function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, 
         DateFin: derniereDate,
       },
       Fichier: {
-        Encodage,
-        Separateur,
-        Format,
+        Encodage: encodage,
+        Separateur: separateur,
+        Format: format,
       },
     },
   };

@@ -33,21 +33,21 @@ describe('FECReader', () => {
   describe('parsing', () => {
     it('parse un FEC avec séparateur tabulation', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.journaux).toBeDefined();
-      expect(Object.keys(result.journaux)).toContain('ACH');
-      expect(Object.keys(result.journaux)).toContain('VTE');
+      expect(result.Journaux).toBeDefined();
+      expect(Object.keys(result.Journaux)).toContain('ACH');
+      expect(Object.keys(result.Journaux)).toContain('VTE');
     });
 
     it('parse un FEC avec séparateur pipe', () => {
       const result = FECReader(fixture('sample_pipe.txt'));
-      expect(result.journaux).toBeDefined();
-      expect(Object.keys(result.journaux)).toContain('VTE');
-      expect(Object.keys(result.journaux)).toContain('ACH');
+      expect(result.Journaux).toBeDefined();
+      expect(Object.keys(result.Journaux)).toContain('VTE');
+      expect(Object.keys(result.Journaux)).toContain('ACH');
     });
 
     it('parse le format Montant/Sens et produit Debit/Credit', () => {
       const result = FECReader(fixture('sample_pipe.txt'));
-      const ecriture = Object.values(result.journaux['VTE'].ecritures)[0][0];
+      const ecriture = Object.values(result.Journaux['VTE'].Ecritures)[0].Lignes[0];
       expect(ecriture).toHaveProperty('Debit');
       expect(ecriture).toHaveProperty('Credit');
       expect(ecriture).not.toHaveProperty('Montant');
@@ -56,7 +56,7 @@ describe('FECReader', () => {
 
     it('Debit et Credit sont des nombres', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      const ecriture = Object.values(result.journaux['ACH'].ecritures)[0][0];
+      const ecriture = Object.values(result.Journaux['ACH'].Ecritures)[0].Lignes[0];
       expect(typeof ecriture.Debit).toBe('number');
       expect(typeof ecriture.Credit).toBe('number');
     });
@@ -64,8 +64,8 @@ describe('FECReader', () => {
     it('tolère les fins de ligne Windows \\r\\n', () => {
       const content = fixture('sample_tab.txt').replace(/\n/g, '\r\n');
       const result = FECReader(content);
-      expect(Object.keys(result.journaux)).toContain('ACH');
-      expect(result.journaux['ACH'].nbLignes).toBe(3);
+      expect(Object.keys(result.Journaux)).toContain('ACH');
+      expect(result.Journaux['ACH'].NombreLignes).toBe(3);
     });
 
     it('accepte les variantes de casse MontantDevise / IDevise dans le header', () => {
@@ -83,105 +83,105 @@ describe('FECReader', () => {
     it('supprime les guillemets encadrant les champs', () => {
       const quotedRow = row('"ACH"', '"Achats"', 'AC0001', '20240101', '"60600"', 'Fournitures', '', '', 'FA001', '20240101', 'Test', '100,00', '0,00');
       const result = FECReader(makeFEC(quotedRow));
-      expect(result.journaux['ACH']).toBeDefined();
-      expect(Object.values(result.journaux['ACH'].ecritures)[0][0].CompteNum).toBe('60600');
+      expect(result.Journaux['ACH']).toBeDefined();
+      expect(Object.values(result.Journaux['ACH'].Ecritures)[0].Lignes[0].CompteNum).toBe('60600');
     });
   });
 
   describe('structure JSON', () => {
     it('les écritures sont groupées par journal et par EcritureNum', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.journaux['ACH'].ecritures['AC0001']).toHaveLength(3);
-      expect(result.journaux['VTE'].ecritures['VT0001']).toHaveLength(2);
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes).toHaveLength(3);
+      expect(result.Journaux['VTE'].Ecritures['VT0001'].Lignes).toHaveLength(2);
     });
 
     it('nbLignes reflète le nombre de lignes du journal', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.journaux['ACH'].nbLignes).toBe(3);
-      expect(result.journaux['OD'].nbLignes).toBe(2);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(3);
+      expect(result.Journaux['OD'].NombreLignes).toBe(2);
     });
 
     it('derniereDate du journal est au format YYYYMMDD', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.journaux['ACH'].derniereDate).toMatch(/^\d{8}$/);
+      expect(result.Journaux['ACH'].DerniereDate).toMatch(/^\d{8}$/);
     });
 
     it('derniereDate reflète la dernière date du journal', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.journaux['ACH'].derniereDate).toBe('20240115');
-      expect(result.journaux['VTE'].derniereDate).toBe('20241231');
+      expect(result.Journaux['ACH'].DerniereDate).toBe('20240115');
+      expect(result.Journaux['VTE'].DerniereDate).toBe('20241231');
     });
 
     it('periode.premiereDate et derniereDate sont au format YYYYMMDD', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.periode.dateDebut).toMatch(/^\d{8}$/);
-      expect(result.meta.periode.dateFin).toMatch(/^\d{8}$/);
+      expect(result.Metadonnees.Periode.DateDebut).toMatch(/^\d{8}$/);
+      expect(result.Metadonnees.Periode.DateFin).toMatch(/^\d{8}$/);
     });
 
     it('periode couvre bien l\'ensemble du fichier', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.periode.dateDebut).toBe('20240115');
-      expect(result.meta.periode.dateFin).toBe('20241231');
+      expect(result.Metadonnees.Periode.DateDebut).toBe('20240115');
+      expect(result.Metadonnees.Periode.DateFin).toBe('20241231');
     });
 
     it('fichier sans lignes de données retourne des journaux vides', () => {
       const result = FECReader(HEADER + '\n');
-      expect(result.journaux).toEqual({});
-      expect(result.meta.periode.dateDebut).toBeNull();
-      expect(result.meta.periode.dateFin).toBeNull();
+      expect(result.Journaux).toEqual({});
+      expect(result.Metadonnees.Periode.DateDebut).toBeNull();
+      expect(result.Metadonnees.Periode.DateFin).toBeNull();
     });
   });
 
   describe('métadonnées fichier', () => {
     it('détecte le séparateur tabulation', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.fichier.separateur).toBe('\t');
+      expect(result.Metadonnees.Fichier.Separateur).toBe('\t');
     });
 
     it('détecte le séparateur pipe', () => {
       const result = FECReader(fixture('sample_pipe.txt'));
-      expect(result.meta.fichier.separateur).toBe('|');
+      expect(result.Metadonnees.Fichier.Separateur).toBe('|');
     });
 
     it('détecte le format standard (Debit/Credit)', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.meta.fichier.format).toBe('standard');
+      expect(result.Metadonnees.Fichier.Format).toBe('standard');
     });
 
     it('détecte le format avecSens (Montant/Sens)', () => {
       const result = FECReader(fixture('sample_pipe.txt'));
-      expect(result.meta.fichier.format).toBe('avecSens');
+      expect(result.Metadonnees.Fichier.Format).toBe('avecSens');
     });
 
     it('rapporte l\'encodage UTF-8 pour une chaîne', () => {
       const result = FECReader(makeFEC(SAMPLE_ROW));
-      expect(result.meta.fichier.encodage).toBe('UTF-8');
+      expect(result.Metadonnees.Fichier.Encodage).toBe('UTF-8');
     });
 
     it('rapporte l\'encodage UTF-8 pour un Buffer UTF-8', () => {
       const result = FECReader(Buffer.from(makeFEC(SAMPLE_ROW), 'utf8'));
-      expect(result.meta.fichier.encodage).toBe('UTF-8');
+      expect(result.Metadonnees.Fichier.Encodage).toBe('UTF-8');
     });
 
     it('rapporte l\'encodage UTF-8 BOM pour un Buffer avec BOM', () => {
       const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
       const content = Buffer.from(makeFEC(SAMPLE_ROW), 'utf8');
       const result = FECReader(Buffer.concat([bom, content]));
-      expect(result.meta.fichier.encodage).toBe('UTF-8 BOM');
+      expect(result.Metadonnees.Fichier.Encodage).toBe('UTF-8 BOM');
     });
   });
 
   describe('comptes', () => {
     it('collecte les comptes principaux', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.comptes).toHaveProperty('60600');
-      expect(result.comptes['60600']).toMatchObject({ compteLib: 'Fournitures admin.' });
+      expect(result.Comptes).toHaveProperty('60600');
+      expect(result.Comptes['60600']).toMatchObject({ Libelle: 'Fournitures admin.' });
     });
 
     it('collecte les comptes auxiliaires', () => {
       const result = FECReader(fixture('sample_tab.txt'));
-      expect(result.comptesAux).toHaveProperty('F001');
-      expect(result.comptesAux).toHaveProperty('C001');
+      expect(result.ComptesAux).toHaveProperty('F001');
+      expect(result.ComptesAux).toHaveProperty('C001');
     });
   });
 
@@ -210,40 +210,40 @@ describe('FECReader', () => {
     it('gère les montants non numériques', () => {
       const badAmountRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', 'ABC,00', '0,00');
       const result = FECReader(makeFEC(badAmountRow));
-      expect(result.journaux['ACH'].ecritures['AC0001'][0].Debit).toBeNaN();
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBeNaN();
     });
 
     it('gère les dates invalides', () => {
       const badDateRow = row('ACH', 'Achats', 'AC0001', 'INVALID', '60600', 'Test', '', '', 'P1', '20240101', 'T', '100,00', '0,00');
       const result = FECReader(makeFEC(badDateRow));
-      expect(result.journaux['ACH'].ecritures['AC0001'][0].EcritureDate).toBe('INVALID');
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].EcritureDate).toBe('INVALID');
     });
 
     it('ignore les lignes vides au milieu du fichier', () => {
       const content = makeFEC(SAMPLE_ROW, '', SAMPLE_ROW);
       const result = FECReader(content);
-      expect(result.journaux['ACH'].nbLignes).toBe(2);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(2);
     });
 
     it('tolère les montants avec espaces comme séparateurs de milliers', () => {
       const exoticAmount = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1 000,00', '0,00');
       const result = FECReader(makeFEC(exoticAmount));
-      expect(result.journaux['ACH'].ecritures['AC0001'][0].Debit).toBe(1); // Les espaces sont ignorés, reste "00" qui devient 0
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Les espaces sont ignorés, reste "00" qui devient 0
     });
 
     it('gère les montants avec plusieurs virgules', () => {
       const multiComma = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1,000,00', '0,00');
       const result = FECReader(makeFEC(multiComma));
-      expect(result.journaux['ACH'].ecritures['AC0001'][0].Debit).toBe(1); // Seule la première virgule est remplacée
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Seule la première virgule est remplacée
     });
   });
 
   describe('cas limites', () => {
     it('fichier avec seulement l\'en-tête et une ligne vide', () => {
       const result = FECReader(HEADER + '\n');
-      expect(result.journaux).toEqual({});
-      expect(result.meta.periode.dateDebut).toBeNull();
-      expect(result.meta.periode.dateFin).toBeNull();
+      expect(result.Journaux).toEqual({});
+      expect(result.Metadonnees.Periode.DateDebut).toBeNull();
+      expect(result.Metadonnees.Periode.DateFin).toBeNull();
     });
 
     it('fichier vide lève une erreur', () => {
