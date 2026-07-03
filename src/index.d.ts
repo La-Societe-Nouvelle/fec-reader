@@ -1,9 +1,21 @@
 export interface Compte {
-  compteLib: string;
+  Libelle: string;
+}
+
+export interface Journal {
+  Libelle: string;
+  NombreEcritures: number;
+  NombreLignes: number;
+  DerniereDate: string;
+  Ecritures: Record<string, Ecriture>;
+}
+
+export interface Ecriture {
+  EcritureDate: string;
+  Lignes: Record<string, LigneEcriture[]>;
 }
 
 export interface LigneEcriture {
-  EcritureDate: string;
   CompteNum: string;
   CompAuxNum: string;
   PieceRef: string;
@@ -18,26 +30,19 @@ export interface LigneEcriture {
   IDevise: string;
 }
 
-export interface Journal {
-  libelle: string;
-  nbLignes: number;
-  derniereDate: string;
-  ecritures: Record<string, LigneEcriture[]>;
-}
-
 export interface FECData {
-  journaux: Record<string, Journal>;
-  comptes: Record<string, Compte>;
-  comptesAux: Record<string, Compte>;
-  meta: {
-    periode: {
-      dateDebut: string | null;
-      dateFin: string | null;
+  Journaux: Record<string, Journal>;
+  Comptes: Record<string, Compte>;
+  ComptesAux: Record<string, Compte>;
+  Metadonnees: {
+    Periode: {
+      DateDebut: string | null;
+      DateFin: string | null;
     };
-    fichier: {
-      encodage: 'UTF-8' | 'UTF-8 BOM' | 'Windows-1252';
-      separateur: '\t' | '|';
-      format: 'standard' | 'avecSens';
+    Fichier: {
+      Encodage: 'UTF-8' | 'UTF-8 BOM' | 'Windows-1252';
+      Separateur: '\t' | '|';
+      Format: 'standard' | 'avecSens';
     };
   };
 }

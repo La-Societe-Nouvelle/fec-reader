@@ -33,10 +33,10 @@ const buffer = readFileSync('./mon-fichier.txt');  // pas d'encodage — Buffer 
 try {
   const result = FECReader(buffer);  // encodage auto-détecté
 
-  console.log(result.meta.periode);
-  // { dateDebut: '20240101', dateFin: '20241231' }
+  console.log(result.Metadonnees.Periode);
+  // { DateDebut: '20240101', DateFin: '20241231' }
 
-  console.log(Object.keys(result.journaux));
+  console.log(Object.keys(result.Journaux));
   // [ 'AN', 'ACH', 'VTE', 'OD' ]
 
 } catch (error) {
@@ -105,31 +105,38 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
-| `journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
-| `comptes` | `Record<string, Compte>` | Comptes généraux indexés par numéro de compte |
-| `comptesAux` | `Record<string, Compte>` | Comptes auxiliaires (tiers) indexés par numéro |
-| `meta.periode.dateDebut` | `string \| null` | Date de début de période (YYYYMMDD) |
-| `meta.periode.dateFin` | `string \| null` | Date de fin de période (YYYYMMDD) |
-| `meta.fichier.encodage` | `string` | Encodage détecté (`UTF-8`, `UTF-8 BOM`, `Windows-1252`) |
-| `meta.fichier.separateur` | `string` | Séparateur détecté (`\t` ou `\|`) |
-| `meta.fichier.format` | `string` | Format détecté (`standard` ou `avecSens`) |
+| `Journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
+| `Comptes` | `Record<string, Compte>` | Comptes généraux indexés par numéro de compte |
+| `ComptesAux` | `Record<string, Compte>` | Comptes auxiliaires (tiers) indexés par numéro |
+| `Metadonnees.Periode.DateDebut` | `string \| null` | Date de début de période (YYYYMMDD) |
+| `Metadonnees.Periode.DateFin` | `string \| null` | Date de fin de période (YYYYMMDD) |
+| `Metadonnees.Fichier.Encodage` | `string` | Encodage détecté (`UTF-8`, `UTF-8 BOM`, `Windows-1252`) |
+| `Metadonnees.Fichier.Separateur` | `string` | Séparateur détecté (`\t` ou `\|`) |
+| `Metadonnees.Fichier.Format` | `string` | Format détecté (`standard` ou `avecSens`) |
 
 ### `Journal`
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
-| `libelle` | `string` | Libellé du journal |
-| `nbLignes` | `number` | Nombre total de lignes d'écriture |
-| `derniereDate` | `string` | Date de la dernière écriture du journal (YYYYMMDD) |
-| `ecritures` | `Record<string, LigneEcriture[]>` | Lignes regroupées par numéro d'écriture |
+| `Libelle` | `string` | Libellé du journal |
+| `NombreEcritures` | `number` | Nombre total d'écritures |
+| `NombreLignes` | `number` | Nombre total de lignes d'écriture |
+| `DerniereDate` | `string` | Date de la dernière écriture du journal (YYYYMMDD) |
+| `Ecritures` | `Record<string, Ecriture>` | Lignes regroupées par numéro d'écriture |
+
+### `Ecriture`
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `EcritureDate` | `string` | Date d'écriture (YYYYMMDD) |
+| `Lignes` | `Record<string, LigneEcriture[]>` | Lignes regroupées par numéro d'écriture |
 
 ### `LigneEcriture`
 
-Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureNum`, `CompteLib` et `CompAuxLib` sont omis — ils sont portés par la structure (`journaux["ACH"]`, `ecritures["AC0001"]`) ou disponibles via `comptes[CompteNum]` et `comptesAux[CompAuxNum]`.
+Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`, `EcritureNum`, `CompteLib` et `CompAuxLib` sont omis — ils sont portés par la structure (`Journaux["ACH"]`, `Ecritures["AC0001"]`) ou disponibles via `Comptes[CompteNum]` et `ComptesAux[CompAuxNum]`.
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `EcritureDate` | `string` | Date d'écriture (YYYYMMDD) |
 | `CompteNum` | `string` | Numéro de compte général |
 | `CompAuxNum` | `string` | Numéro de compte auxiliaire (tiers) |
 | `PieceRef` | `string` | Référence de pièce justificative |
@@ -147,7 +154,7 @@ Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureNum`, 
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
-| `compteLib` | `string` | Libellé du compte |
+| `Libelle` | `string` | Libellé du compte |
 
 ---
 

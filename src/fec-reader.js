@@ -186,24 +186,31 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
     // Journal
     if (!(journalCode in journaux)) {
       journaux[journalCode] = {
-        libelle:      journalLib,
-        nbLignes:     0,
-        derniereDate: null,
-        ecritures:    {},
+        Libelle:   journalLib,
+        NombreEcritures: 0,
+        NombreLignes: 0,
+        DerniereDate: null,
+        Ecritures:    {},
       };
     }
     const journal = journaux[journalCode];
-    if (!journal.ecritures[ecritureNum]) journal.ecritures[ecritureNum] = [];
-    journal.ecritures[ecritureNum].push(donnees);
-    journal.nbLignes++;
-    if (journal.derniereDate === null || ecritureDate > journal.derniereDate) journal.derniereDate = ecritureDate;
+    if (!journal.Ecritures[ecritureNum]) {
+      journal.Ecritures[ecritureNum] = {
+        EcritureDate: ecritureDate,
+        Lignes: []
+      };
+      journal.NombreEcritures++;
+      if (journal.DerniereDate === null || ecritureDate > journal.DerniereDate) journal.DerniereDate = ecritureDate;
+    }
+    journal.Ecritures[ecritureNum].Lignes.push(donnees);
+    journal.NombreLignes++;
 
     // Comptes
     if (!(compteNum in comptes)) {
-      comptes[compteNum] = { compteLib };
+      comptes[compteNum] = { Libelle: compteLib };
     }
     if (compAuxNum && !(compAuxNum in comptesAux)) {
-      comptesAux[compAuxNum] = { compteLib: compAuxLib };
+      comptesAux[compAuxNum] = { Libelle: compAuxLib };
     }
 
     // Période
@@ -228,20 +235,21 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
  * @param {string} format - 'standard' | 'avecSens'
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
  */
+
 function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format) {
   return {
-    journaux,
-    comptes,
-    comptesAux,
-    meta: {
-      periode: {
-        dateDebut: premiereDate,
-        dateFin: derniereDate,
+    Journaux: journaux,
+    Comptes: comptes,
+    ComptesAux: comptesAux,
+    Metadonnees: {
+      Periode: {
+        DateDebut: premiereDate,
+        DateFin: derniereDate,
       },
-      fichier: {
-        encodage,
-        separateur,
-        format,
+      Fichier: {
+        Encodage,
+        Separateur,
+        Format,
       },
     },
   };
@@ -268,6 +276,7 @@ function parseRow(colonnes, champs, format, nettoyer) {
   delete donnees.JournalCode;
   delete donnees.JournalLib;
   delete donnees.EcritureNum;
+  delete donnees.EcritureDate;
   delete donnees.CompteLib;
   delete donnees.CompAuxLib;
 
