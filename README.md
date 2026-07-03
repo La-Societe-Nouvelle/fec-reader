@@ -167,5 +167,5 @@ EUPL-1.2 — [La Société Nouvelle](https://lasocietenouvelle.org)
 ## Support et contribution
 
 Pour signaler un bug ou proposer une amélioration :
-- [Ouvrir une issue sur GitHub](https://github.com/lasocietenouvelle/fec-reader/issues)
-- [Consulter le code source](https://github.com/lasocietenouvelle/fec-reader)
+- [Ouvrir une issue sur GitHub](https://github.com/la-societe-nouvelle/fec-reader/issues)
+- [Consulter le code source](https://github.com/la-societe-nouvelle/fec-reader)
