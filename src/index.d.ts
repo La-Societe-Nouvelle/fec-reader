@@ -12,7 +12,8 @@ export interface Journal {
 
 export interface Ecriture {
   EcritureDate: string;
-  Lignes: Record<string, LigneEcriture[]>;
+  /** Absent lorsque l'option `lignes: false` ou `onLigne` est utilisée. */
+  Lignes?: LigneEcriture[];
 }
 
 export interface LigneEcriture {
@@ -47,6 +48,36 @@ export interface FECData {
   };
 }
 
+/** Ligne transmise à `onLigne` — inclut CompteLib/CompAuxLib, retirés dans `Lignes[]` car déjà disponibles via `Comptes`/`ComptesAux`. */
+export interface LigneAvecLibelles extends LigneEcriture {
+  CompteLib: string;
+  CompAuxLib: string;
+}
+
+export interface LigneContexte {
+  journalCode: string;
+  journalLib: string;
+  ecritureNum: string;
+  ecritureDate: string;
+  compteNum: string;
+  compAuxNum: string;
+}
+
+export interface FECReaderOptions {
+  /**
+   * Si `false`, les lignes ne sont pas matérialisées dans `Ecritures[num].Lignes[]` :
+   * seuls les agrégats (`NombreEcritures`, `NombreLignes`, `DerniereDate`, `EcritureDate`)
+   * sont conservés. Réduit fortement la mémoire retenue sur les gros fichiers.
+   * @default true
+   */
+  lignes?: boolean;
+  /**
+   * Callback invoqué pour chaque ligne de données parsée. Lorsqu'il est fourni,
+   * `Ecritures[num].Lignes[]` n'est pas construit, quelle que soit la valeur de `lignes`.
+   */
+  onLigne?: (ligne: LigneAvecLibelles, contexte: LigneContexte) => void;
+}
+
 /**
  * Parse un fichier FEC (Fichier des Écritures Comptables) et retourne les données structurées.
  *
@@ -56,4 +87,4 @@ export interface FECData {
  *
  * @throws {Error} Si le séparateur n'est pas reconnu ou si des colonnes obligatoires sont absentes
  */
-export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array): FECData;
+export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array, options?: FECReaderOptions): FECData;

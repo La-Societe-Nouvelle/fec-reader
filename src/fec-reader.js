@@ -30,13 +30,23 @@ const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...
  *   - Columns   : standard Débit/Crédit or variant Montant/Sens
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
+ * @param {Object} [options]
+ * @param {boolean} [options.lignes=true] - If false, rows are not materialized into
+ *   `Ecritures[num].Lignes[]` (only the existing aggregates are kept). Significantly
+ *   reduces retained memory on large files.
+ * @param {(ligne: Object, contexte: Object) => void} [options.onLigne] - Callback invoked
+ *   for each row, with a cleaned context (`journalCode`, `journalLib`, `ecritureNum`,
+ *   `ecritureDate`, `compteNum`, `compAuxNum`). Never triggers construction of `Lignes[]`.
+ *   The row includes `CompteLib`/`CompAuxLib` (absent in classic `Lignes[]` mode, but
+ *   useful here since nothing is retained after the call).
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
  * @throws {Error} If the file has an unrecognized separator or missing columns
  */
-export function FECReader(input) {
+export function FECReader(input, options = {}) {
+  const { lignes = true, onLigne = null } = options;
   const { contenu, encodage } = decodeInput(input);
-  const { separateur, entete, format, indexColonnes, colonnes } = parseHeader(contenu);
-  const { journaux, comptes, comptesAux, premiereDate, derniereDate } = collectData(contenu, separateur, entete, indexColonnes, colonnes, format);
+  const { separateur, entete, format, indexColonnes } = parseHeader(contenu);
+  const { journaux, comptes, comptesAux, premiereDate, derniereDate } = collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne });
   return buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format);
 }
 
@@ -81,7 +91,7 @@ function decodeInput(input) {
  * Throws if the separator is unrecognized or required columns are missing.
  *
  * @param {string} contenu
- * @returns {{ separateur: string, entete: string[], format: string, indexColonnes: Object, colonnes: Array }}
+ * @returns {{ separateur: string, entete: string[], format: string, indexColonnes: Object }}
  */
 function parseHeader(contenu) {
   const premiereLigne = contenu.slice(0, contenu.indexOf("\n"));
@@ -101,10 +111,9 @@ function parseHeader(contenu) {
     throw new Error(`Fichier erroné (libellé(s) manquant(s) : ${colonnesManquantes.join(', ')})`);
   }
 
-  const colonnes      = entete.map((col, idx) => [col, idx]);
-  const indexColonnes = Object.fromEntries(colonnes);
+  const indexColonnes = Object.fromEntries(entete.map((col, idx) => [col, idx]));
 
-  return { separateur, entete, format, indexColonnes, colonnes };
+  return { separateur, entete, format, indexColonnes };
 }
 
 /**
@@ -115,11 +124,16 @@ function parseHeader(contenu) {
  * @param {string} separateur
  * @param {string[]} entete
  * @param {Object} indexColonnes - Column name → index map
- * @param {Array} colonnes - Pre-computed [col, idx] pairs for parseRow
  * @param {string} format - 'standard' | 'avecSens'
+ * @param {Object} options
+ * @param {boolean} options.lignes - If false (and no onLigne), rows are neither parsed nor retained.
+ * @param {(ligne: Object, contexte: Object) => void} options.onLigne - Per-row callback; if provided, rows are not retained.
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, premiereDate: string|null, derniereDate: string|null }}
  */
-function collectData(contenu, separateur, entete, indexColonnes, colonnes, format) {
+function collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne }) {
+  const garderLignes = lignes && !onLigne;
+  const donneesRequises = garderLignes || !!onLigne;
+
   const journaux   = {};
   const comptes    = {};
   const comptesAux = {};
@@ -135,7 +149,35 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
   const iCompAuxNum   = indexColonnes["CompAuxNum"];
   const iCompAuxLib   = indexColonnes["CompAuxLib"];
 
-  const nettoyer = (s) => (s || "").replace(/^[\s"]+|[\s"]+$/g, "");
+  // Early-exit on empty string: even a regex on "" has a non-zero setup cost, and
+  // many FEC fields (CompAuxNum, MontantDevise, IDevise...) are empty on most rows.
+  const nettoyer = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
+
+  // Row constructor selected once per file (format and garderLignes are invariant
+  // for the whole parse) : each row then produces a fixed-shape object literal,
+  // with no `delete`, letting V8 keep a stable hidden class instead of falling
+  // back to dictionary mode on every row.
+  const indexLigne = {
+    compteNum:     iCompteNum,
+    compAuxNum:    iCompAuxNum,
+    compteLib:     iCompteLib,
+    compAuxLib:    iCompAuxLib,
+    pieceRef:      indexColonnes["PieceRef"],
+    pieceDate:     indexColonnes["PieceDate"],
+    ecritureLib:   indexColonnes["EcritureLib"],
+    debit:         indexColonnes["Debit"],
+    credit:        indexColonnes["Credit"],
+    montant:       indexColonnes["Montant"],
+    sens:          indexColonnes["Sens"],
+    ecritureLet:   indexColonnes["EcritureLet"],
+    dateLet:       indexColonnes["DateLet"],
+    validDate:     indexColonnes["ValidDate"],
+    montantDevise: indexColonnes["MontantDevise"],
+    iDevise:       indexColonnes["IDevise"],
+  };
+  const construireLigne = donneesRequises
+    ? (format === "avecSens" ? parseRowAvecSens : parseRowStandard)
+    : null;
 
   const premierSautLigne = contenu.indexOf("\n");
   let debutLigne = premierSautLigne + 1;
@@ -172,7 +214,7 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
       throw new Error(message);
     }
 
-    const donnees = parseRow(colonnes, champs, format, nettoyer);
+    const donnees = donneesRequises ? construireLigne(champs, nettoyer, indexLigne, garderLignes) : null;
 
     const journalCode  = nettoyer(champs[iJournalCode]);
     const journalLib   = nettoyer(champs[iJournalLib]);
@@ -195,14 +237,18 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
     }
     const journal = journaux[journalCode];
     if (!journal.Ecritures[ecritureNum]) {
-      journal.Ecritures[ecritureNum] = {
-        EcritureDate: ecritureDate,
-        Lignes: []
-      };
+      journal.Ecritures[ecritureNum] = garderLignes
+        ? { EcritureDate: ecritureDate, Lignes: [] }
+        : { EcritureDate: ecritureDate };
       journal.NombreEcritures++;
       if (journal.DerniereDate === null || ecritureDate > journal.DerniereDate) journal.DerniereDate = ecritureDate;
     }
-    journal.Ecritures[ecritureNum].Lignes.push(donnees);
+    if (garderLignes) {
+      journal.Ecritures[ecritureNum].Lignes.push(donnees);
+    }
+    if (onLigne) {
+      onLigne(donnees, { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum });
+    }
     journal.NombreLignes++;
 
     // Comptes
@@ -256,40 +302,74 @@ function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, 
 }
 
 /**
- * Parse a single data row into a keyed object.
- * Uses pre-computed colonnes to avoid Object.entries() allocation on every call.
- * Converts Montant/Sens to Debit/Credit for avecSens format.
- * Parses Debit and Credit as numbers.
+ * Build a data row object for the 'standard' format (Debit/Credit columns).
+ * Always produces the same object shape (same keys, same order) for a given
+ * `garderLignes` value — `garderLignes` is invariant for the whole file, so the
+ * object shape never varies from one row to the next, letting V8 keep the same
+ * hidden class across all rows.
  *
- * @param {Array} colonnes - Pre-computed [col, idx] pairs from header
  * @param {string[]} champs
- * @param {string} format - 'standard' | 'avecSens'
  * @param {Function} nettoyer - Field cleaner (strips quotes and whitespace)
+ * @param {Object} idx - Column index map (see `indexLigne` in collectData)
+ * @param {boolean} garderLignes - If true (rows materialized into `Lignes[]`),
+ *   CompteLib/CompAuxLib are omitted (already available via `Comptes`/`ComptesAux`).
+ *   If false (`onLigne` mode), they are included since the row is never retained
+ *   after the callback returns.
  * @returns {Object}
  */
-function parseRow(colonnes, champs, format, nettoyer) {
-  const donnees = {};
-  for (const [col, idx] of colonnes) {
-    donnees[col] = nettoyer(champs[idx]);
+function parseRowStandard(champs, nettoyer, idx, garderLignes) {
+  const donnees = {
+    CompteNum:     nettoyer(champs[idx.compteNum]),
+    CompAuxNum:    nettoyer(champs[idx.compAuxNum]),
+    PieceRef:      nettoyer(champs[idx.pieceRef]),
+    PieceDate:     nettoyer(champs[idx.pieceDate]),
+    EcritureLib:   nettoyer(champs[idx.ecritureLib]),
+    Debit:         parseAmount(nettoyer(champs[idx.debit])),
+    Credit:        parseAmount(nettoyer(champs[idx.credit])),
+    EcritureLet:   nettoyer(champs[idx.ecritureLet]),
+    DateLet:       nettoyer(champs[idx.dateLet]),
+    ValidDate:     nettoyer(champs[idx.validDate]),
+    MontantDevise: nettoyer(champs[idx.montantDevise]),
+    IDevise:       nettoyer(champs[idx.iDevise]),
+  };
+  if (!garderLignes) {
+    donnees.CompteLib  = nettoyer(champs[idx.compteLib]);
+    donnees.CompAuxLib = nettoyer(champs[idx.compAuxLib]);
   }
+  return donnees;
+}
 
-  delete donnees.JournalCode;
-  delete donnees.JournalLib;
-  delete donnees.EcritureNum;
-  delete donnees.EcritureDate;
-  delete donnees.CompteLib;
-  delete donnees.CompAuxLib;
-
-  if (format === "avecSens") {
-    donnees.Debit  = donnees.Sens === "D" ? donnees.Montant : "0,00";
-    donnees.Credit = donnees.Sens === "C" ? donnees.Montant : "0,00";
-    delete donnees.Montant;
-    delete donnees.Sens;
+/**
+ * Build a data row object for the 'avecSens' format (Montant/Sens columns,
+ * converted to Debit/Credit). Same shape-stability rationale as `parseRowStandard`.
+ *
+ * @param {string[]} champs
+ * @param {Function} nettoyer
+ * @param {Object} idx
+ * @param {boolean} garderLignes
+ * @returns {Object}
+ */
+function parseRowAvecSens(champs, nettoyer, idx, garderLignes) {
+  const sens    = nettoyer(champs[idx.sens]);
+  const montant = nettoyer(champs[idx.montant]);
+  const donnees = {
+    CompteNum:     nettoyer(champs[idx.compteNum]),
+    CompAuxNum:    nettoyer(champs[idx.compAuxNum]),
+    PieceRef:      nettoyer(champs[idx.pieceRef]),
+    PieceDate:     nettoyer(champs[idx.pieceDate]),
+    EcritureLib:   nettoyer(champs[idx.ecritureLib]),
+    Debit:         parseAmount(sens === "D" ? montant : "0,00"),
+    Credit:        parseAmount(sens === "C" ? montant : "0,00"),
+    EcritureLet:   nettoyer(champs[idx.ecritureLet]),
+    DateLet:       nettoyer(champs[idx.dateLet]),
+    ValidDate:     nettoyer(champs[idx.validDate]),
+    MontantDevise: nettoyer(champs[idx.montantDevise]),
+    IDevise:       nettoyer(champs[idx.iDevise]),
+  };
+  if (!garderLignes) {
+    donnees.CompteLib  = nettoyer(champs[idx.compteLib]);
+    donnees.CompAuxLib = nettoyer(champs[idx.compAuxLib]);
   }
-
-  donnees.Debit  = parseAmount(donnees.Debit);
-  donnees.Credit = parseAmount(donnees.Credit);
-
   return donnees;
 }
 
