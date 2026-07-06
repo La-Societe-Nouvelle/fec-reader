@@ -39,15 +39,36 @@ const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...
  *   `ecritureDate`, `compteNum`, `compAuxNum`). Never triggers construction of `Lignes[]`.
  *   The row includes `CompteLib`/`CompAuxLib` (absent in classic `Lignes[]` mode, but
  *   useful here since nothing is retained after the call).
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
- * @throws {Error} If the file has an unrecognized separator or missing columns
+ * @param {string} [options.nomFichier] - Nom du fichier d'origine (ex: "552100554FEC20231231.txt").
+ *   Si fourni, le SIREN et la date de clôture d'exercice sont extraits du nom (norme
+ *   DGFiP : `<Siren>FEC<AAAAMMJJ>`) et exposés dans `Metadonnees.Fichier`. N'affecte pas
+ *   le parsing du contenu.
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], meta: Object }}
+ * @throws {Error} If the file has an unrecognized separator or missing header columns
+ *   (unrecoverable — nothing can be parsed). Malformed individual rows do not throw:
+ *   they are skipped and reported in `Anomalies`.
  */
 export function FECReader(input, options = {}) {
-  const { lignes = true, onLigne = null } = options;
+  const { lignes = true, onLigne = null, nomFichier = null } = options;
   const { contenu, encodage } = decodeInput(input);
   const { separateur, entete, format, indexColonnes } = parseHeader(contenu);
-  const { journaux, comptes, comptesAux, premiereDate, derniereDate } = collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne });
-  return buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format);
+  const { journaux, comptes, comptesAux, premiereDate, derniereDate, anomalies } = collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne });
+  const { siren, clotureExercice } = parseNomFichier(nomFichier);
+  return buildOutput(journaux, comptes, comptesAux, anomalies, premiereDate, derniereDate, encodage, separateur, format, siren, clotureExercice);
+}
+
+/**
+ * Extract SIREN and fiscal year-end date from a FEC filename, per the DGFiP
+ * naming convention `<Siren>FEC<AAAAMMJJ>[...]`.
+ *
+ * @param {string|null} nomFichier
+ * @returns {{ siren: string|null, clotureExercice: string|null }}
+ */
+function parseNomFichier(nomFichier) {
+  if (!nomFichier) return { siren: null, clotureExercice: null };
+  const correspondance = /(\d{9,14})FEC(\d{8})/i.exec(nomFichier);
+  if (!correspondance) return { siren: null, clotureExercice: null };
+  return { siren: correspondance[1], clotureExercice: correspondance[2] };
 }
 
 /**
@@ -128,7 +149,7 @@ function parseHeader(contenu) {
  * @param {Object} options
  * @param {boolean} options.lignes - If false (and no onLigne), rows are neither parsed nor retained.
  * @param {(ligne: Object, contexte: Object) => void} options.onLigne - Per-row callback; if provided, rows are not retained.
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, premiereDate: string|null, derniereDate: string|null }}
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], premiereDate: string|null, derniereDate: string|null }}
  */
 function collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne }) {
   const garderLignes = lignes && !onLigne;
@@ -137,6 +158,7 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
   const journaux   = {};
   const comptes    = {};
   const comptesAux = {};
+  const anomalies  = [];
   let premiereDate = null;
   let derniereDate = null;
 
@@ -211,10 +233,12 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
       } else {
         message = `Fichier FEC invalide — trop de colonnes à la ligne ${indiceLigne + 1} (${enTrop} colonne(s) en trop). Vérifiez le format d'export.`;
       }
-      throw new Error(message);
+      anomalies.push({ Ligne: indiceLigne + 1, Message: message });
+      continue;
     }
 
     const donnees = donneesRequises ? construireLigne(champs, nettoyer, indexLigne, garderLignes) : null;
+    const { debit, credit } = extraireMontants(champs, nettoyer, indexLigne, format, donnees);
 
     const journalCode  = nettoyer(champs[iJournalCode]);
     const journalLib   = nettoyer(champs[iJournalLib]);
@@ -253,7 +277,14 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
 
     // Comptes
     if (!(compteNum in comptes)) {
-      comptes[compteNum] = { Libelle: compteLib };
+      comptes[compteNum] = { Libelle: compteLib, Debit: 0, Credit: 0, Solde: 0, SoldeAN: 0 };
+    }
+    const compte = comptes[compteNum];
+    compte.Debit += debit;
+    compte.Credit += credit;
+    compte.Solde = compte.Debit - compte.Credit;
+    if (journalCode === "AN") {
+      compte.SoldeAN += debit - credit;
     }
     if (compAuxNum && !(compAuxNum in comptesAux)) {
       comptesAux[compAuxNum] = { Libelle: compAuxLib };
@@ -264,7 +295,33 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
     if (derniereDate === null || ecritureDate > derniereDate) derniereDate = ecritureDate;
   }
 
-  return { journaux, comptes, comptesAux, premiereDate, derniereDate };
+  return { journaux, comptes, comptesAux, anomalies, premiereDate, derniereDate };
+}
+
+/**
+ * Extract Debit/Credit amounts for a row, regardless of whether the row is being
+ * fully materialized — solde aggregation on `Comptes` needs these unconditionally.
+ * Reuses the amounts already computed in `donnees` when available, to avoid parsing twice.
+ *
+ * @param {string[]} champs
+ * @param {Function} nettoyer
+ * @param {Object} idx
+ * @param {string} format - 'standard' | 'avecSens'
+ * @param {Object|null} donnees - Already-built row (if `lignes`/`onLigne` requested it)
+ * @returns {{ debit: number, credit: number }} - 0 instead of NaN when unparseable, so
+ *   solde aggregation is not poisoned by a single bad amount.
+ */
+function extraireMontants(champs, nettoyer, idx, format, donnees) {
+  if (donnees) return { debit: donnees.Debit || 0, credit: donnees.Credit || 0 };
+  if (format === "avecSens") {
+    const sens    = nettoyer(champs[idx.sens]);
+    const montant = parseAmount(nettoyer(champs[idx.montant]));
+    return { debit: sens === "D" ? montant || 0 : 0, credit: sens === "C" ? montant || 0 : 0 };
+  }
+  return {
+    debit:  parseAmount(nettoyer(champs[idx.debit])) || 0,
+    credit: parseAmount(nettoyer(champs[idx.credit])) || 0,
+  };
 }
 
 /**
@@ -274,19 +331,24 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
  * @param {Object} journaux
  * @param {Object} comptes
  * @param {Object} comptesAux
+ * @param {Object[]} anomalies - Malformed rows skipped during parsing ({ Ligne, Message })
  * @param {string|null} premiereDate - Earliest EcritureDate seen (YYYYMMDD)
  * @param {string|null} derniereDate - Latest EcritureDate seen (YYYYMMDD)
  * @param {string} encodage - Detected encoding
  * @param {string} separateur - Field separator used
  * @param {string} format - 'standard' | 'avecSens'
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
+ * @param {string|null} siren - SIREN extracted from the original filename, if provided
+ * @param {string|null} clotureExercice - Fiscal year-end date (YYYYMMDD) extracted from
+ *   the original filename, if provided
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], meta: Object }}
  */
 
-function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format) {
+function buildOutput(journaux, comptes, comptesAux, anomalies, premiereDate, derniereDate, encodage, separateur, format, siren, clotureExercice) {
   return {
     Journaux: journaux,
     Comptes: comptes,
     ComptesAux: comptesAux,
+    Anomalies: anomalies,
     Metadonnees: {
       Periode: {
         DateDebut: premiereDate,
@@ -296,6 +358,8 @@ function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, 
         Encodage: encodage,
         Separateur: separateur,
         Format: format,
+        Siren: siren,
+        ClotureExercice: clotureExercice,
       },
     },
   };

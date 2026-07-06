@@ -85,6 +85,7 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 | `input` | `string \| Buffer \| ArrayBuffer \| Uint8Array` | Contenu du fichier FEC — les octets bruts sont auto-décodés |
 | `options.lignes` | `boolean` (défaut `true`) | Si `false`, les lignes ne sont pas matérialisées dans `Ecritures[num].Lignes[]` — seuls les agrégats (`NombreEcritures`, `NombreLignes`, `DerniereDate`, `EcritureDate`) sont conservés. Utile pour prévisualiser un gros FEC ou n'en extraire que les métadonnées, sans retenir chaque ligne en mémoire. |
 | `options.onLigne` | `(ligne, contexte) => void` | Callback invoqué pour chaque ligne de données parsée. `contexte` expose `{ journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }` déjà nettoyés. `ligne` inclut `CompteLib` et `CompAuxLib` (retirés en mode `Lignes[]` classique car déjà disponibles via `Comptes`/`ComptesAux`, mais utiles ici puisque la ligne n'est jamais retenue après l'appel). Permet de construire ses propres agrégats (ex : totaux par compte) au fil du parsing, sans que le package retienne les lignes. Quand `onLigne` est fourni, `Ecritures[num].Lignes[]` n'est jamais construit, quelle que soit la valeur de `lignes`. |
+| `options.nomFichier` | `string` | Nom du fichier d'origine (ex : `"552100554FEC20231231.txt"`). Si fourni, le SIREN et la date de clôture d'exercice sont extraits du nom selon la convention DGFiP `<Siren>FEC<AAAAMMJJ>` et exposés dans `Metadonnees.Fichier.Siren` / `Metadonnees.Fichier.ClotureExercice`. `null` si non fourni ou si le nom ne suit pas la convention. N'affecte pas le parsing du contenu — utile pour vérifier a posteriori que la date de clôture déclarée dans le nom correspond à `Metadonnees.Periode.DateFin` déduite du contenu. |
 
 **Retour :** un objet [`FECData`](#fecdata).
 
@@ -108,16 +109,30 @@ FECReader(buffer, {
 
 Utile pour un simple aperçu ou une extraction de métadonnées sur un gros fichier, sans retenir le détail ligne par ligne.
 
-**Erreurs levées :**
+**Erreurs levées** (cas irrécupérables — rien ne peut être parsé) :
 
 | Condition | Message |
 |-----------|---------|
 | Type d'entrée invalide | `FECReader : paramètre invalide (string, Buffer ou ArrayBuffer attendu)` |
 | Séparateur non reconnu | `Séparateur non reconnu (attendu : tabulation ou pipe)` |
-| Colonnes obligatoires manquantes | `Fichier erroné (libellé(s) manquant(s) : <colonnes>)` |
-| Ligne avec colonnes manquantes | `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne N : <colonnes>` |
-| Ligne avec trop de colonnes | `Fichier FEC invalide — trop de colonnes à la ligne N` |
-| Fichier corrompu | `Le fichier FEC semble corrompu ou mal exporté (ligne N : X colonne(s) lue(s) sur Y attendues)` |
+| Colonnes obligatoires manquantes dans l'en-tête | `Fichier erroné (libellé(s) manquant(s) : <colonnes>)` |
+
+**Lignes de données mal formées : pas d'exception**
+
+Une ligne dont le nombre de colonnes est incorrect (colonnes manquantes ou en trop) n'interrompt pas le parsing : elle est ignorée et signalée dans `result.Anomalies` (`{ Ligne, Message }`), le reste du fichier est traité normalement. Utile pour ne pas devoir réimporter le fichier à chaque correction lors du nettoyage d'un FEC :
+
+```js
+const result = FECReader(buffer);
+if (result.Anomalies.length > 0) {
+  console.warn(`${result.Anomalies.length} ligne(s) ignorée(s) :`, result.Anomalies);
+}
+```
+
+| Message d'anomalie |
+|---------------------|
+| `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne N : <colonnes>` |
+| `Fichier FEC invalide — trop de colonnes à la ligne N (<N> colonne(s) en trop)` |
+| `Le fichier FEC semble corrompu ou mal exporté (ligne N : X colonne(s) lue(s) sur Y attendues)` |
 
 ---
 
@@ -130,11 +145,14 @@ Utile pour un simple aperçu ou une extraction de métadonnées sur un gros fich
 | `Journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
 | `Comptes` | `Record<string, Compte>` | Comptes généraux indexés par numéro de compte |
 | `ComptesAux` | `Record<string, Compte>` | Comptes auxiliaires (tiers) indexés par numéro |
+| `Anomalies` | `{ Ligne: number, Message: string }[]` | Lignes de données ignorées pendant le parsing (nombre de colonnes incorrect). Tableau vide si le fichier est valide. |
 | `Metadonnees.Periode.DateDebut` | `string \| null` | Date de début de période (YYYYMMDD) |
 | `Metadonnees.Periode.DateFin` | `string \| null` | Date de fin de période (YYYYMMDD) |
 | `Metadonnees.Fichier.Encodage` | `string` | Encodage détecté (`UTF-8`, `UTF-8 BOM`, `Windows-1252`) |
 | `Metadonnees.Fichier.Separateur` | `string` | Séparateur détecté (`\t` ou `\|`) |
 | `Metadonnees.Fichier.Format` | `string` | Format détecté (`standard` ou `avecSens`) |
+| `Metadonnees.Fichier.Siren` | `string \| null` | SIREN extrait de `options.nomFichier`, ou `null` |
+| `Metadonnees.Fichier.ClotureExercice` | `string \| null` | Date de clôture d'exercice (YYYYMMDD) extraite de `options.nomFichier`, ou `null` |
 
 ### `Journal`
 
@@ -174,9 +192,20 @@ Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`,
 
 ### `Compte`
 
+Pour `ComptesAux` :
+
 | Propriété | Type | Description |
 |-----------|------|-------------|
 | `Libelle` | `string` | Libellé du compte |
+
+Pour `Comptes` (comptes généraux), en plus du libellé :
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `Debit` | `number` | Somme des débits, tous journaux confondus |
+| `Credit` | `number` | Somme des crédits, tous journaux confondus |
+| `Solde` | `number` | `Debit - Credit`, tous journaux confondus |
+| `SoldeAN` | `number` | `Debit - Credit` restreint au journal des à-nouveaux (code journal `AN`) |
 
 ---
 
