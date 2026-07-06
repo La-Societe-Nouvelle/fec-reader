@@ -183,6 +183,24 @@ describe('FECReader', () => {
       expect(result.ComptesAux).toHaveProperty('F001');
       expect(result.ComptesAux).toHaveProperty('C001');
     });
+
+    it('calcule le solde par compte, tous journaux confondus', () => {
+      const content = makeFEC(
+        row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Fournitures', '', '', 'FA001', '20240101', 'Achat', '100,00', '0,00'),
+        row('OD', 'Opérations diverses', 'OD0001', '20240115', '60600', 'Fournitures', '', '', '', '20240115', 'Avoir', '0,00', '30,00'),
+      );
+      const result = FECReader(content);
+      expect(result.Comptes['60600']).toMatchObject({ Debit: 100, Credit: 30, Solde: 70 });
+    });
+
+    it('calcule SoldeAN en ne retenant que le journal des à-nouveaux', () => {
+      const content = makeFEC(
+        row('AN', 'À-nouveaux', 'AN0001', '20240101', '60600', 'Fournitures', '', '', '', '20240101', 'Report', '50,00', '0,00'),
+        row('ACH', 'Achats', 'AC0001', '20240115', '60600', 'Fournitures', '', '', 'FA001', '20240115', 'Achat', '100,00', '0,00'),
+      );
+      const result = FECReader(content);
+      expect(result.Comptes['60600']).toMatchObject({ Debit: 150, Credit: 0, Solde: 150, SoldeAN: 50 });
+    });
   });
 
   describe('erreurs', () => {
@@ -195,14 +213,24 @@ describe('FECReader', () => {
       expect(() => FECReader(badContent)).toThrow(/Fichier erroné.*manquant/);
     });
 
-    it('lève une erreur avec le numéro de ligne si une ligne est incomplète', () => {
+    it("signale une ligne incomplète dans Anomalies sans lever d'erreur", () => {
       const incomplete = makeFEC(SAMPLE_ROW, 'ACH\tAchats'); // ligne 3, trop peu de champs
-      expect(() => FECReader(incomplete)).toThrow(/ligne 3/);
+      const result = FECReader(incomplete);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0]).toMatchObject({ Ligne: 3 });
+      expect(result.Anomalies[0].Message).toMatch(/ligne 3/);
     });
 
-    it('affiche un message clair pour un FEC mal formé', () => {
-      const malformedFEC = 'JournalCode|JournalLib\nACH|Achats\nACH'; // FEC incomplet
-      expect(() => FECReader(malformedFEC)).toThrow(/Fichier erroné.*manquant/);
+    it('ignore la ligne malformée mais parse les lignes valides restantes', () => {
+      const content = makeFEC('ACH\tAchats', SAMPLE_ROW); // ligne 2 incomplète, ligne 3 valide
+      const result = FECReader(content);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(1);
+    });
+
+    it('Anomalies est un tableau vide pour un fichier valide', () => {
+      const result = FECReader(fixture('sample_tab.txt'));
+      expect(result.Anomalies).toEqual([]);
     });
   });
 

@@ -106,6 +106,76 @@ describe('FECReader — options', () => {
     });
   });
 
+  describe('{ nomFichier }', () => {
+    it('extrait le SIREN et la date de clôture du nom de fichier', () => {
+      const result = FECReader(fixture('sample_tab.txt'), { nomFichier: '552100554FEC20231231.txt' });
+      expect(result.Metadonnees.Fichier.Siren).toBe('552100554');
+      expect(result.Metadonnees.Fichier.ClotureExercice).toBe('20231231');
+    });
+
+    it("renvoie null si nomFichier n'est pas fourni", () => {
+      const result = FECReader(fixture('sample_tab.txt'));
+      expect(result.Metadonnees.Fichier.Siren).toBeNull();
+      expect(result.Metadonnees.Fichier.ClotureExercice).toBeNull();
+    });
+
+    it('renvoie null si le nom de fichier ne suit pas la convention DGFiP', () => {
+      const result = FECReader(fixture('sample_tab.txt'), { nomFichier: 'export-comptable.txt' });
+      expect(result.Metadonnees.Fichier.Siren).toBeNull();
+      expect(result.Metadonnees.Fichier.ClotureExercice).toBeNull();
+    });
+  });
+
+  describe('{ champs }', () => {
+    it('ne construit que les clés demandées dans Lignes[]', () => {
+      const result = FECReader(fixture('sample_tab.txt'), { champs: ['CompteNum', 'EcritureLib'] });
+      const ligne = result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0];
+      expect(Object.keys(ligne).sort()).toEqual(['CompteNum', 'EcritureLib']);
+    });
+
+    it('lève une erreur si champs contient un nom invalide', () => {
+      expect(() => FECReader(fixture('sample_tab.txt'), { champs: ['CompteNumero'] }))
+        .toThrow(/CompteNumero/);
+    });
+
+    it('sans champs, la sortie de Lignes[] est identique à la version historique', () => {
+      const complet = FECReader(fixture('sample_tab.txt'));
+      const sansChamps = FECReader(fixture('sample_tab.txt'), {});
+      expect(sansChamps.Journaux).toEqual(complet.Journaux);
+    });
+
+    it('calcule des soldes de comptes corrects même si Debit/Credit sont exclus de champs', () => {
+      const complet = FECReader(fixture('sample_tab.txt'));
+      const restreint = FECReader(fixture('sample_tab.txt'), { champs: ['EcritureLib'] });
+      expect(restreint.Comptes).toEqual(complet.Comptes);
+    });
+
+    it('inclut CompteLib même en mode lignes complet si demandé explicitement dans champs', () => {
+      const result = FECReader(fixture('sample_tab.txt'), { champs: ['CompteNum', 'CompteLib', 'CompAuxLib'] });
+      const ligneFournisseur = result.Journaux['ACH'].Ecritures['AC0002'].Lignes.find((l) => l.CompteNum === '401000');
+      expect(ligneFournisseur.CompteLib).toBe('Fournisseur Dupont');
+      expect(ligneFournisseur.CompAuxLib).toBe('Dupont SARL');
+    });
+
+    it('restreint aussi la ligne transmise à onLigne', () => {
+      const appels = [];
+      FECReader(fixture('sample_tab.txt'), {
+        champs: ['CompteNum'],
+        onLigne: (ligne) => appels.push(ligne),
+      });
+      expect(Object.keys(appels[0])).toEqual(['CompteNum']);
+    });
+
+    it('fonctionne avec le format avecSens (pipe), soldes corrects', () => {
+      const complet = FECReader(fixture('sample_pipe.txt'));
+      const restreint = FECReader(fixture('sample_pipe.txt'), { champs: ['Debit', 'Credit'] });
+      expect(restreint.Comptes).toEqual(complet.Comptes);
+      const ligne = restreint.Journaux[Object.keys(restreint.Journaux)[0]];
+      const premiereEcriture = Object.values(ligne.Ecritures)[0];
+      expect(Object.keys(premiereEcriture.Lignes[0]).sort()).toEqual(['Credit', 'Debit']);
+    });
+  });
+
   describe('rétrocompatibilité', () => {
     it('sans options, le comportement est identique au mode complet historique', () => {
       const result = FECReader(fixture('sample_tab.txt'));
