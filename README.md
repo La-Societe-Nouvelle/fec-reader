@@ -106,7 +106,7 @@ FECReader(buffer, {
 });
 ```
 
-Utile pour un simple aperçu ou une extraction de métadonnées sur un gros fichier, sans retenir le détail ligne par ligne (mesurable via `npm run bench:memory`).
+Utile pour un simple aperçu ou une extraction de métadonnées sur un gros fichier, sans retenir le détail ligne par ligne.
 
 **Erreurs levées :**
 
