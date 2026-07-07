@@ -175,7 +175,7 @@ describe('FECReader', () => {
     it('collecte les comptes principaux', () => {
       const result = FECReader(fixture('sample_tab.txt'));
       expect(result.Comptes).toHaveProperty('60600');
-      expect(result.Comptes['60600']).toMatchObject({ Libelle: 'Fournitures admin.' });
+      expect(result.Comptes['60600']).toEqual({ Libelle: 'Fournitures admin.' });
     });
 
     it('collecte les comptes auxiliaires', () => {
@@ -184,22 +184,13 @@ describe('FECReader', () => {
       expect(result.ComptesAux).toHaveProperty('C001');
     });
 
-    it('calcule le solde par compte, tous journaux confondus', () => {
+    it("n'expose ni Debit, ni Credit, ni Solde, même pour un compte touché par plusieurs journaux", () => {
       const content = makeFEC(
         row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Fournitures', '', '', 'FA001', '20240101', 'Achat', '100,00', '0,00'),
         row('OD', 'Opérations diverses', 'OD0001', '20240115', '60600', 'Fournitures', '', '', '', '20240115', 'Avoir', '0,00', '30,00'),
       );
       const result = FECReader(content);
-      expect(result.Comptes['60600']).toMatchObject({ Debit: 100, Credit: 30, Solde: 70 });
-    });
-
-    it('calcule SoldeAN en ne retenant que le journal des à-nouveaux', () => {
-      const content = makeFEC(
-        row('AN', 'À-nouveaux', 'AN0001', '20240101', '60600', 'Fournitures', '', '', '', '20240101', 'Report', '50,00', '0,00'),
-        row('ACH', 'Achats', 'AC0001', '20240115', '60600', 'Fournitures', '', '', 'FA001', '20240115', 'Achat', '100,00', '0,00'),
-      );
-      const result = FECReader(content);
-      expect(result.Comptes['60600']).toMatchObject({ Debit: 150, Credit: 0, Solde: 150, SoldeAN: 50 });
+      expect(result.Comptes['60600']).toEqual({ Libelle: 'Fournitures' });
     });
   });
 
@@ -263,6 +254,12 @@ describe('FECReader', () => {
       const multiComma = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1,000,00', '0,00');
       const result = FECReader(makeFEC(multiComma));
       expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Seule la première virgule est remplacée
+    });
+
+    it('gère les montants vides (chaîne vide) comme 0', () => {
+      const emptyAmountRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyAmountRow));
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
     });
   });
 

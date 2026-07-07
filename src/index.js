@@ -1,1 +1,1 @@
-export { FECReader } from './fec-reader.js';
+export { FECReader, FECLignesAsync } from './fec-reader.js';

@@ -124,6 +124,16 @@ describe('FECReader — options', () => {
       expect(result.Metadonnees.Fichier.Siren).toBeNull();
       expect(result.Metadonnees.Fichier.ClotureExercice).toBeNull();
     });
+
+    it('extrait le SIREN avec 10 à 14 chiffres', () => {
+      const result10 = FECReader(fixture('sample_tab.txt'), { nomFichier: '1234567890FEC20231231.txt' });
+      expect(result10.Metadonnees.Fichier.Siren).toBe('1234567890');
+      expect(result10.Metadonnees.Fichier.ClotureExercice).toBe('20231231');
+
+      const result14 = FECReader(fixture('sample_tab.txt'), { nomFichier: '12345678901234FEC20231231.txt' });
+      expect(result14.Metadonnees.Fichier.Siren).toBe('12345678901234');
+      expect(result14.Metadonnees.Fichier.ClotureExercice).toBe('20231231');
+    });
   });
 
   describe('{ champs }', () => {
@@ -144,15 +154,16 @@ describe('FECReader — options', () => {
       expect(sansChamps.Journaux).toEqual(complet.Journaux);
     });
 
-    it('calcule des soldes de comptes corrects même si Debit/Credit sont exclus de champs', () => {
+    it('Comptes reste { Libelle } quel que soit champs (indépendant de la ligne construite)', () => {
       const complet = FECReader(fixture('sample_tab.txt'));
       const restreint = FECReader(fixture('sample_tab.txt'), { champs: ['EcritureLib'] });
       expect(restreint.Comptes).toEqual(complet.Comptes);
+      expect(Object.values(restreint.Comptes)[0]).toEqual({ Libelle: expect.any(String) });
     });
 
     it('inclut CompteLib même en mode lignes complet si demandé explicitement dans champs', () => {
       const result = FECReader(fixture('sample_tab.txt'), { champs: ['CompteNum', 'CompteLib', 'CompAuxLib'] });
-      const ligneFournisseur = result.Journaux['ACH'].Ecritures['AC0002'].Lignes.find((l) => l.CompteNum === '401000');
+      const ligneFournisseur = result.Journaux['ACH'].Ecritures['AC0001'].Lignes.find((l) => l.CompteNum === '401000');
       expect(ligneFournisseur.CompteLib).toBe('Fournisseur Dupont');
       expect(ligneFournisseur.CompAuxLib).toBe('Dupont SARL');
     });
@@ -166,13 +177,18 @@ describe('FECReader — options', () => {
       expect(Object.keys(appels[0])).toEqual(['CompteNum']);
     });
 
-    it('fonctionne avec le format avecSens (pipe), soldes corrects', () => {
+    it('fonctionne avec le format avecSens (pipe)', () => {
       const complet = FECReader(fixture('sample_pipe.txt'));
       const restreint = FECReader(fixture('sample_pipe.txt'), { champs: ['Debit', 'Credit'] });
       expect(restreint.Comptes).toEqual(complet.Comptes);
       const ligne = restreint.Journaux[Object.keys(restreint.Journaux)[0]];
       const premiereEcriture = Object.values(ligne.Ecritures)[0];
       expect(Object.keys(premiereEcriture.Lignes[0]).sort()).toEqual(['Credit', 'Debit']);
+    });
+
+    it('lève une erreur si champs est un tableau vide', () => {
+      expect(() => FECReader(fixture('sample_tab.txt'), { champs: [] }))
+        .toThrow(/l'option champs ne peut pas être un tableau vide/);
     });
   });
 

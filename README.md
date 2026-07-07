@@ -86,6 +86,7 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 | `options.lignes` | `boolean` (défaut `true`) | Si `false`, les lignes ne sont pas matérialisées dans `Ecritures[num].Lignes[]` — seuls les agrégats (`NombreEcritures`, `NombreLignes`, `DerniereDate`, `EcritureDate`) sont conservés. Utile pour prévisualiser un gros FEC ou n'en extraire que les métadonnées, sans retenir chaque ligne en mémoire. |
 | `options.onLigne` | `(ligne, contexte) => void` | Callback invoqué pour chaque ligne de données parsée. `contexte` expose `{ journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }` déjà nettoyés. `ligne` inclut `CompteLib` et `CompAuxLib` (retirés en mode `Lignes[]` classique car déjà disponibles via `Comptes`/`ComptesAux`, mais utiles ici puisque la ligne n'est jamais retenue après l'appel). Permet de construire ses propres agrégats (ex : totaux par compte) au fil du parsing, sans que le package retienne les lignes. Quand `onLigne` est fourni, `Ecritures[num].Lignes[]` n'est jamais construit, quelle que soit la valeur de `lignes`. |
 | `options.nomFichier` | `string` | Nom du fichier d'origine (ex : `"552100554FEC20231231.txt"`). Si fourni, le SIREN et la date de clôture d'exercice sont extraits du nom selon la convention DGFiP `<Siren>FEC<AAAAMMJJ>` et exposés dans `Metadonnees.Fichier.Siren` / `Metadonnees.Fichier.ClotureExercice`. `null` si non fourni ou si le nom ne suit pas la convention. N'affecte pas le parsing du contenu — utile pour vérifier a posteriori que la date de clôture déclarée dans le nom correspond à `Metadonnees.Periode.DateFin` déduite du contenu. |
+| `options.champs` | `string[]` | Liste blanche des champs à construire pour chaque ligne (`Lignes[]` ou argument de `onLigne`), parmi `CompteNum`, `CompAuxNum`, `PieceRef`, `PieceDate`, `EcritureLib`, `Debit`, `Credit`, `EcritureLet`, `DateLet`, `ValidDate`, `MontantDevise`, `IDevise`, `CompteLib`, `CompAuxLib`. Si non fourni, tous les champs sont construits (comportement historique). Un nom de champ inconnu lève une erreur. `CompteLib`/`CompAuxLib` explicitement demandés priment toujours sur l'auto-exclusion habituelle en mode `lignes: true`. Réduit le travail de parsing par ligne — utile quand seul un sous-ensemble des champs est réellement consommé en aval. |
 
 **Retour :** un objet [`FECData`](#fecdata).
 
@@ -108,6 +109,18 @@ FECReader(buffer, {
 ```
 
 Utile pour un simple aperçu ou une extraction de métadonnées sur un gros fichier, sans retenir le détail ligne par ligne.
+
+**Champs restreints — exemple :**
+
+```js
+// Preview : seuls les champs affichés sont construits par ligne
+const apercu = FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'EcritureLib'] });
+
+// Production : les 11 champs réellement consommés, sans le reste (PieceRef, EcritureLet...)
+const complet = FECReader(buffer, {
+  champs: ['CompteNum', 'CompteLib', 'CompAuxNum', 'CompAuxLib', 'EcritureLib', 'Debit', 'Credit'],
+});
+```
 
 **Erreurs levées** (cas irrécupérables — rien ne peut être parsé) :
 
@@ -133,6 +146,55 @@ if (result.Anomalies.length > 0) {
 | `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne N : <colonnes>` |
 | `Fichier FEC invalide — trop de colonnes à la ligne N (<N> colonne(s) en trop)` |
 | `Le fichier FEC semble corrompu ou mal exporté (ligne N : X colonne(s) lue(s) sur Y attendues)` |
+
+---
+
+### Itération asynchrone (`FECLignesAsync`)
+
+Pour un parsing volumineux sur un serveur à process partagé, `FECLignesAsync`
+permet de traiter les lignes sans bloquer l'event loop. Il yield des **lots**
+d'items (pas une ligne à la fois) :
+
+```js
+import { FECLignesAsync } from '@lasocietenouvelle/fec-reader';
+
+for await (const lot of FECLignesAsync(buffer, { champs: ['CompteNum', 'Debit', 'Credit'] })) {
+  for (const item of lot) {
+    if ('anomalie' in item) {
+      console.warn(item.anomalie.Message);
+      continue;
+    }
+    const { ligne, contexte } = item;
+    // traiter la ligne...
+  }
+}
+```
+
+Contrairement à `FECReader`, `FECLignesAsync` ne construit aucun agrégat
+(`Journaux`/`Comptes`/`Anomalies`) : c'est un flux pur. Pour obtenir l'agrégat
+en plus du streaming, faites un second appel à `FECReader` (synchrone, rapide)
+sur le même contenu.
+
+Options : `champs` (identique à `FECReader`), `intervalleCedeMain` (nombre de
+lignes par lot yield, et nombre de lignes entre deux cessions de la main à
+l'event loop, défaut `1000`).
+
+**Pourquoi des lots et pas une ligne à la fois ?** Un `for await` qui
+consommerait une ligne à la fois forcerait le générateur à traverser le
+protocole des générateurs async (résolution de promesse) à chaque ligne. Ce
+coût, négligeable isolément, s'est révélé significatif sous un contexte
+`AsyncLocalStorage` imbriqué (ex. une Server Action Next.js avec `auth()` +
+contexte de requête) : mesuré en conditions réelles, un flux ligne par ligne
+sur ~420 000 lignes était 2 à 4x plus lent que l'équivalent synchrone, et
+instable (RSS croissante d'un appel à l'autre dans le même process). Yield par
+lot de `intervalleCedeMain` ramène le nombre de points de suspension du
+générateur d'un par ligne à un par lot, ce qui restaure une performance stable
+et comparable au parsing synchrone. Détails et mesures dans
+`docs/superpowers/specs/2026-07-07-fec-lignes-async-design.md`.
+
+`FECLignesAsync` est réservé à Node.js : il utilise `setImmediate` en interne,
+indisponible dans les navigateurs (contrairement à `FECReader`, qui accepte
+`ArrayBuffer` pour un usage `FileReader` en environnement navigateur).
 
 ---
 
@@ -192,20 +254,11 @@ Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`,
 
 ### `Compte`
 
-Pour `ComptesAux` :
+Forme commune à `Comptes` et `ComptesAux` :
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
 | `Libelle` | `string` | Libellé du compte |
-
-Pour `Comptes` (comptes généraux), en plus du libellé :
-
-| Propriété | Type | Description |
-|-----------|------|-------------|
-| `Debit` | `number` | Somme des débits, tous journaux confondus |
-| `Credit` | `number` | Somme des crédits, tous journaux confondus |
-| `Solde` | `number` | `Debit - Credit`, tous journaux confondus |
-| `SoldeAN` | `number` | `Debit - Credit` restreint au journal des à-nouveaux (code journal `AN`) |
 
 ---
 

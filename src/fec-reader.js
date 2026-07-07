@@ -11,6 +11,15 @@ const COLONNES_SUFFIXE = [
 const COLONNES_FEC            = [...COLONNES_PREFIXE, "Debit",   "Credit",   ...COLONNES_SUFFIXE];
 const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...COLONNES_SUFFIXE];
 
+// Champs disponibles pour l'option `champs` (clés possibles d'une ligne construite,
+// dans l'ordre canonique utilisé pour la construction — cf. construireLigne).
+const CHAMPS_LIGNE_DISPONIBLES = [
+  "CompteNum", "CompAuxNum", "PieceRef", "PieceDate", "EcritureLib",
+  "Debit", "Credit",
+  "EcritureLet", "DateLet", "ValidDate", "MontantDevise", "IDevise",
+  "CompteLib", "CompAuxLib",
+];
+
 /**
  * Parse a FEC file (Fichier des Écritures Comptables) and return structured data.
  *
@@ -43,18 +52,200 @@ const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...
  *   Si fourni, le SIREN et la date de clôture d'exercice sont extraits du nom (norme
  *   DGFiP : `<Siren>FEC<AAAAMMJJ>`) et exposés dans `Metadonnees.Fichier`. N'affecte pas
  *   le parsing du contenu.
+ * @param {string[]} [options.champs] - Liste blanche des champs à construire pour chaque
+ *   ligne (`Lignes[]` ou argument de `onLigne`). Parmi : `CompteNum`, `CompAuxNum`,
+ *   `PieceRef`, `PieceDate`, `EcritureLib`, `Debit`, `Credit`, `EcritureLet`, `DateLet`,
+ *   `ValidDate`, `MontantDevise`, `IDevise`, `CompteLib`, `CompAuxLib`. Si non fourni, tous
+ *   les champs sont construits (comportement historique). Un nom de champ inconnu lève une
+ *   erreur. `CompteLib`/`CompAuxLib` explicitement demandés priment toujours sur
+ *   l'auto-exclusion habituelle en mode `lignes: true`.
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], meta: Object }}
  * @throws {Error} If the file has an unrecognized separator or missing header columns
  *   (unrecoverable — nothing can be parsed). Malformed individual rows do not throw:
  *   they are skipped and reported in `Anomalies`.
  */
 export function FECReader(input, options = {}) {
-  const { lignes = true, onLigne = null, nomFichier = null } = options;
+  const { lignes = true, onLigne = null, nomFichier = null, champs = null } = options;
+  const champsSet = validerChamps(champs);
   const { contenu, encodage } = decodeInput(input);
   const { separateur, entete, format, indexColonnes } = parseHeader(contenu);
-  const { journaux, comptes, comptesAux, premiereDate, derniereDate, anomalies } = collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne });
+  const { journaux, comptes, comptesAux, premiereDate, derniereDate, anomalies } = collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne, champsSet });
   const { siren, clotureExercice } = parseNomFichier(nomFichier);
   return buildOutput(journaux, comptes, comptesAux, anomalies, premiereDate, derniereDate, encodage, separateur, format, siren, clotureExercice);
+}
+
+/**
+ * Stream FEC rows as an async iterator of batches, yielding periodically to
+ * the event loop so a large file does not block a shared-process server.
+ *
+ * Unlike `FECReader`, this builds no aggregate: no `Journaux`, `Comptes`,
+ * `ComptesAux`, or return value. Each yielded batch is an array of up to
+ * `intervalleCedeMain` items, each either:
+ *   - `{ ligne, contexte }` for a valid row (same shape as `onLigne`'s arguments)
+ *   - `{ anomalie: { Ligne, Message } }` for a malformed row (skipped, not thrown)
+ *
+ * Rows are NOT yielded one at a time: an async generator's `.next()` always
+ * returns a Promise, so a `for await` consuming one item per row pays that
+ * promise-resolution cost once per row. Under a request-scoped
+ * `AsyncLocalStorage` context (e.g. a Next.js Server Action) that cost is
+ * amplified — each continuation must restore the ALS context — and at
+ * hundreds of thousands of rows this made per-row yielding measurably slower
+ * and less stable than batching (regression found and fixed 2026-07-07, see
+ * `docs/superpowers/specs/2026-07-07-fec-lignes-async-design.md`). Batching
+ * reduces the number of suspension points from one per row to one per
+ * `intervalleCedeMain` rows.
+ *
+ * Header errors (unrecognized separator, missing required columns) throw
+ * synchronously on the first `.next()` call, before any yield — same
+ * unrecoverable-error contract as `FECReader`.
+ *
+ * Node.js only — uses `setImmediate` internally, not available in browsers,
+ * unlike `FECReader`.
+ *
+ * @param {string|Buffer|ArrayBuffer|Uint8Array} input
+ * @param {Object} [options]
+ * @param {string[]} [options.champs] - Same whitelist as `FECReader`'s `options.champs`.
+ * @param {number} [options.intervalleCedeMain=1000] - Number of rows per yielded
+ *   batch, and number of rows between two `await setImmediate` yields to the event loop.
+ * @returns {AsyncGenerator<Array<{ligne: Object, contexte: Object}|{anomalie: {Ligne: number, Message: string}}>>}
+ * @throws {Error} If the file has an unrecognized separator or missing header columns.
+ */
+export async function* FECLignesAsync(input, options = {}) {
+  const { champs = null, intervalleCedeMain = 1000 } = options;
+  const champsSet = validerChamps(champs);
+  const { contenu } = decodeInput(input);
+  const { separateur, entete, format, indexColonnes } = parseHeader(contenu);
+
+  const iJournalCode  = indexColonnes["JournalCode"];
+  const iJournalLib   = indexColonnes["JournalLib"];
+  const iEcritureNum  = indexColonnes["EcritureNum"];
+  const iEcritureDate = indexColonnes["EcritureDate"];
+  const iCompteNum    = indexColonnes["CompteNum"];
+  const iCompAuxNum   = indexColonnes["CompAuxNum"];
+
+  const nettoyer = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
+
+  const indexLigne = {
+    compteNum:     iCompteNum,
+    compAuxNum:    iCompAuxNum,
+    compteLib:     indexColonnes["CompteLib"],
+    compAuxLib:    indexColonnes["CompAuxLib"],
+    pieceRef:      indexColonnes["PieceRef"],
+    pieceDate:     indexColonnes["PieceDate"],
+    ecritureLib:   indexColonnes["EcritureLib"],
+    debit:         indexColonnes["Debit"],
+    credit:        indexColonnes["Credit"],
+    montant:       indexColonnes["Montant"],
+    sens:          indexColonnes["Sens"],
+    ecritureLet:   indexColonnes["EcritureLet"],
+    dateLet:       indexColonnes["DateLet"],
+    validDate:     indexColonnes["ValidDate"],
+    montantDevise: indexColonnes["MontantDevise"],
+    iDevise:       indexColonnes["IDevise"],
+  };
+
+  const premierSautLigne = contenu.indexOf("\n");
+  let debutLigne = premierSautLigne + 1;
+  let indiceLigne = 0;
+  let lot = [];
+
+  while (debutLigne < contenu.length) {
+    let finLigne = contenu.indexOf("\n", debutLigne);
+    if (finLigne === -1) finLigne = contenu.length;
+
+    const ligneBrute = contenu.slice(debutLigne, finLigne).replace("\r", "");
+    debutLigne = finLigne + 1;
+    indiceLigne++;
+
+    if (ligneBrute === "") continue;
+
+    const champsLigne = ligneBrute.split(separateur);
+
+    const messageAnomalie = reconcilierColonnes(champsLigne, entete, indiceLigne);
+    if (messageAnomalie) {
+      lot.push({ anomalie: { Ligne: indiceLigne + 1, Message: messageAnomalie } });
+    } else {
+      const ligne = construireLigneRow(champsLigne, nettoyer, indexLigne, false, champsSet, format);
+      const contexte = construireContexte(champsLigne, nettoyer, {
+        iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum,
+      });
+      lot.push({ ligne, contexte });
+    }
+
+    if (lot.length >= intervalleCedeMain) {
+      yield lot;
+      lot = [];
+      await new Promise(setImmediate);
+    }
+  }
+
+  if (lot.length > 0) yield lot;
+}
+
+/**
+ * Reconcile a row's column count against the header, tolerating 1-2 missing
+ * trailing columns (some software omits the final separator when there's no
+ * currency). Mutates `champsLigne` in place when padding is applied.
+ *
+ * @param {string[]} champsLigne
+ * @param {string[]} entete
+ * @param {number} indiceLigne - 1-indexed line number (before the +1 used in messages)
+ * @returns {string|null} An anomaly message if the row cannot be reconciled, else `null`.
+ */
+function reconcilierColonnes(champsLigne, entete, indiceLigne) {
+  if (champsLigne.length < entete.length && champsLigne.length >= entete.length - 2) {
+    while (champsLigne.length < entete.length) champsLigne.push("");
+  }
+
+  if (champsLigne.length === entete.length) return null;
+
+  const manquantes = champsLigne.length < entete.length ? entete.slice(champsLigne.length) : [];
+  const enTrop     = champsLigne.length > entete.length ? champsLigne.length - entete.length : 0;
+  if (manquantes.length >= entete.length / 2) {
+    return `Le fichier FEC semble corrompu ou mal exporté (ligne ${indiceLigne + 1} : ${champsLigne.length} colonne(s) lue(s) sur ${entete.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
+  } else if (manquantes.length > 0) {
+    return `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne ${indiceLigne + 1} : ${manquantes.join(", ")}. Vérifiez le format d'export.`;
+  }
+  return `Fichier FEC invalide — trop de colonnes à la ligne ${indiceLigne + 1} (${enTrop} colonne(s) en trop). Vérifiez le format d'export.`;
+}
+
+/**
+ * Build the per-row context object (journal/écriture/compte identifiers) shared
+ * between `collectData`'s `onLigne` callback and `FECLignesAsync`'s yielded item.
+ *
+ * @param {string[]} champsLigne
+ * @param {Function} nettoyer
+ * @param {Object} idxContexte - `{ iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum }`
+ * @returns {{ journalCode: string, journalLib: string, ecritureNum: string, ecritureDate: string, compteNum: string, compAuxNum: string }}
+ */
+function construireContexte(champsLigne, nettoyer, idxContexte) {
+  return {
+    journalCode:  nettoyer(champsLigne[idxContexte.iJournalCode]),
+    journalLib:   nettoyer(champsLigne[idxContexte.iJournalLib]),
+    ecritureNum:  nettoyer(champsLigne[idxContexte.iEcritureNum]),
+    ecritureDate: nettoyer(champsLigne[idxContexte.iEcritureDate]),
+    compteNum:    nettoyer(champsLigne[idxContexte.iCompteNum]),
+    compAuxNum:   nettoyer(champsLigne[idxContexte.iCompAuxNum]),
+  };
+}
+
+/**
+ * Validate `options.champs` against the known set of row field names.
+ *
+ * @param {string[]|null} champs
+ * @returns {Set<string>|null} `null` when `champs` is not provided (all fields kept).
+ * @throws {Error} If `champs` contains an unknown field name.
+ */
+function validerChamps(champs) {
+  if (champs === null) return null;
+  if (champs.length === 0) {
+    throw new Error('FECReader : l\'option champs ne peut pas être un tableau vide');
+  }
+  const invalides = champs.filter((c) => !CHAMPS_LIGNE_DISPONIBLES.includes(c));
+  if (invalides.length > 0) {
+    throw new Error(`FECReader : champ(s) invalide(s) dans l'option champs : ${invalides.join(', ')}`);
+  }
+  return new Set(champs);
 }
 
 /**
@@ -151,7 +342,7 @@ function parseHeader(contenu) {
  * @param {(ligne: Object, contexte: Object) => void} options.onLigne - Per-row callback; if provided, rows are not retained.
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], premiereDate: string|null, derniereDate: string|null }}
  */
-function collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne }) {
+function collectData(contenu, separateur, entete, indexColonnes, format, { lignes, onLigne, champsSet }) {
   const garderLignes = lignes && !onLigne;
   const donneesRequises = garderLignes || !!onLigne;
 
@@ -198,7 +389,7 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
     iDevise:       indexColonnes["IDevise"],
   };
   const construireLigne = donneesRequises
-    ? (format === "avecSens" ? parseRowAvecSens : parseRowStandard)
+    ? (champs, nettoyer, idx, garderLignes) => construireLigneRow(champs, nettoyer, idx, garderLignes, champsSet, format)
     : null;
 
   const premierSautLigne = contenu.indexOf("\n");
@@ -218,36 +409,18 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
     const champs = ligneBrute.split(separateur);
 
     // Tolerate lines missing 1-2 trailing columns (some software omits final separator when no currency)
-    if (champs.length < entete.length && champs.length >= entete.length - 2) {
-      while (champs.length < entete.length) champs.push("");
-    }
-
-    if (champs.length !== entete.length) {
-      const manquantes = champs.length < entete.length ? entete.slice(champs.length) : [];
-      const enTrop     = champs.length > entete.length ? champs.length - entete.length : 0;
-      let message;
-      if (manquantes.length >= entete.length / 2) {
-        message = `Le fichier FEC semble corrompu ou mal exporté (ligne ${indiceLigne + 1} : ${champs.length} colonne(s) lue(s) sur ${entete.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
-      } else if (manquantes.length > 0) {
-        message = `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne ${indiceLigne + 1} : ${manquantes.join(", ")}. Vérifiez le format d'export.`;
-      } else {
-        message = `Fichier FEC invalide — trop de colonnes à la ligne ${indiceLigne + 1} (${enTrop} colonne(s) en trop). Vérifiez le format d'export.`;
-      }
-      anomalies.push({ Ligne: indiceLigne + 1, Message: message });
+    const messageAnomalie = reconcilierColonnes(champs, entete, indiceLigne);
+    if (messageAnomalie) {
+      anomalies.push({ Ligne: indiceLigne + 1, Message: messageAnomalie });
       continue;
     }
 
     const donnees = donneesRequises ? construireLigne(champs, nettoyer, indexLigne, garderLignes) : null;
-    const { debit, credit } = extraireMontants(champs, nettoyer, indexLigne, format, donnees);
 
-    const journalCode  = nettoyer(champs[iJournalCode]);
-    const journalLib   = nettoyer(champs[iJournalLib]);
-    const ecritureNum  = nettoyer(champs[iEcritureNum]);
-    const ecritureDate = nettoyer(champs[iEcritureDate]);
-    const compteNum    = nettoyer(champs[iCompteNum]);
-    const compteLib    = nettoyer(champs[iCompteLib]);
-    const compAuxNum   = nettoyer(champs[iCompAuxNum]);
-    const compAuxLib   = nettoyer(champs[iCompAuxLib]);
+    const { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum } =
+      construireContexte(champs, nettoyer, { iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum });
+    const compteLib  = nettoyer(champs[iCompteLib]);
+    const compAuxLib = nettoyer(champs[iCompAuxLib]);
 
     // Journal
     if (!(journalCode in journaux)) {
@@ -277,14 +450,7 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
 
     // Comptes
     if (!(compteNum in comptes)) {
-      comptes[compteNum] = { Libelle: compteLib, Debit: 0, Credit: 0, Solde: 0, SoldeAN: 0 };
-    }
-    const compte = comptes[compteNum];
-    compte.Debit += debit;
-    compte.Credit += credit;
-    compte.Solde = compte.Debit - compte.Credit;
-    if (journalCode === "AN") {
-      compte.SoldeAN += debit - credit;
+      comptes[compteNum] = { Libelle: compteLib };
     }
     if (compAuxNum && !(compAuxNum in comptesAux)) {
       comptesAux[compAuxNum] = { Libelle: compAuxLib };
@@ -296,32 +462,6 @@ function collectData(contenu, separateur, entete, indexColonnes, format, { ligne
   }
 
   return { journaux, comptes, comptesAux, anomalies, premiereDate, derniereDate };
-}
-
-/**
- * Extract Debit/Credit amounts for a row, regardless of whether the row is being
- * fully materialized — solde aggregation on `Comptes` needs these unconditionally.
- * Reuses the amounts already computed in `donnees` when available, to avoid parsing twice.
- *
- * @param {string[]} champs
- * @param {Function} nettoyer
- * @param {Object} idx
- * @param {string} format - 'standard' | 'avecSens'
- * @param {Object|null} donnees - Already-built row (if `lignes`/`onLigne` requested it)
- * @returns {{ debit: number, credit: number }} - 0 instead of NaN when unparseable, so
- *   solde aggregation is not poisoned by a single bad amount.
- */
-function extraireMontants(champs, nettoyer, idx, format, donnees) {
-  if (donnees) return { debit: donnees.Debit || 0, credit: donnees.Credit || 0 };
-  if (format === "avecSens") {
-    const sens    = nettoyer(champs[idx.sens]);
-    const montant = parseAmount(nettoyer(champs[idx.montant]));
-    return { debit: sens === "D" ? montant || 0 : 0, credit: sens === "C" ? montant || 0 : 0 };
-  }
-  return {
-    debit:  parseAmount(nettoyer(champs[idx.debit])) || 0,
-    credit: parseAmount(nettoyer(champs[idx.credit])) || 0,
-  };
 }
 
 /**
@@ -366,74 +506,59 @@ function buildOutput(journaux, comptes, comptesAux, anomalies, premiereDate, der
 }
 
 /**
- * Build a data row object for the 'standard' format (Debit/Credit columns).
- * Always produces the same object shape (same keys, same order) for a given
- * `garderLignes` value — `garderLignes` is invariant for the whole file, so the
- * object shape never varies from one row to the next, letting V8 keep the same
- * hidden class across all rows.
+ * Build a data row object, honoring the `champs` whitelist.
+ *
+ * Follows a fixed canonical order of `if (inclure(...))` checks, always run in the
+ * same sequence for a given `champsSet`/`format`/`garderLignes` (all invariant for
+ * the whole file) — the object shape never varies from one row to the next, letting
+ * V8 keep the same hidden class across all rows.
+ *
+ * `CompteLib`/`CompAuxLib` follow a special rule: with no `champsSet` (default, all
+ * fields), they are omitted when `garderLignes` (already available via `Comptes`/
+ * `ComptesAux`) and included otherwise (`onLigne` mode, row never retained). When
+ * `champsSet` is explicit, it always wins over that default — the caller's choice.
  *
  * @param {string[]} champs
  * @param {Function} nettoyer - Field cleaner (strips quotes and whitespace)
  * @param {Object} idx - Column index map (see `indexLigne` in collectData)
- * @param {boolean} garderLignes - If true (rows materialized into `Lignes[]`),
- *   CompteLib/CompAuxLib are omitted (already available via `Comptes`/`ComptesAux`).
- *   If false (`onLigne` mode), they are included since the row is never retained
- *   after the callback returns.
- * @returns {Object}
- */
-function parseRowStandard(champs, nettoyer, idx, garderLignes) {
-  const donnees = {
-    CompteNum:     nettoyer(champs[idx.compteNum]),
-    CompAuxNum:    nettoyer(champs[idx.compAuxNum]),
-    PieceRef:      nettoyer(champs[idx.pieceRef]),
-    PieceDate:     nettoyer(champs[idx.pieceDate]),
-    EcritureLib:   nettoyer(champs[idx.ecritureLib]),
-    Debit:         parseAmount(nettoyer(champs[idx.debit])),
-    Credit:        parseAmount(nettoyer(champs[idx.credit])),
-    EcritureLet:   nettoyer(champs[idx.ecritureLet]),
-    DateLet:       nettoyer(champs[idx.dateLet]),
-    ValidDate:     nettoyer(champs[idx.validDate]),
-    MontantDevise: nettoyer(champs[idx.montantDevise]),
-    IDevise:       nettoyer(champs[idx.iDevise]),
-  };
-  if (!garderLignes) {
-    donnees.CompteLib  = nettoyer(champs[idx.compteLib]);
-    donnees.CompAuxLib = nettoyer(champs[idx.compAuxLib]);
-  }
-  return donnees;
-}
-
-/**
- * Build a data row object for the 'avecSens' format (Montant/Sens columns,
- * converted to Debit/Credit). Same shape-stability rationale as `parseRowStandard`.
- *
- * @param {string[]} champs
- * @param {Function} nettoyer
- * @param {Object} idx
  * @param {boolean} garderLignes
+ * @param {Set<string>|null} champsSet - Field whitelist (`options.champs`), or `null` for all fields
+ * @param {string} format - 'standard' | 'avecSens'
  * @returns {Object}
  */
-function parseRowAvecSens(champs, nettoyer, idx, garderLignes) {
-  const sens    = nettoyer(champs[idx.sens]);
-  const montant = nettoyer(champs[idx.montant]);
-  const donnees = {
-    CompteNum:     nettoyer(champs[idx.compteNum]),
-    CompAuxNum:    nettoyer(champs[idx.compAuxNum]),
-    PieceRef:      nettoyer(champs[idx.pieceRef]),
-    PieceDate:     nettoyer(champs[idx.pieceDate]),
-    EcritureLib:   nettoyer(champs[idx.ecritureLib]),
-    Debit:         parseAmount(sens === "D" ? montant : "0,00"),
-    Credit:        parseAmount(sens === "C" ? montant : "0,00"),
-    EcritureLet:   nettoyer(champs[idx.ecritureLet]),
-    DateLet:       nettoyer(champs[idx.dateLet]),
-    ValidDate:     nettoyer(champs[idx.validDate]),
-    MontantDevise: nettoyer(champs[idx.montantDevise]),
-    IDevise:       nettoyer(champs[idx.iDevise]),
-  };
-  if (!garderLignes) {
-    donnees.CompteLib  = nettoyer(champs[idx.compteLib]);
-    donnees.CompAuxLib = nettoyer(champs[idx.compAuxLib]);
+function construireLigneRow(champs, nettoyer, idx, garderLignes, champsSet, format) {
+  const inclure = (nom) => champsSet === null || champsSet.has(nom);
+  const donnees = {};
+
+  if (inclure("CompteNum"))   donnees.CompteNum   = nettoyer(champs[idx.compteNum]);
+  if (inclure("CompAuxNum"))  donnees.CompAuxNum  = nettoyer(champs[idx.compAuxNum]);
+  if (inclure("PieceRef"))    donnees.PieceRef    = nettoyer(champs[idx.pieceRef]);
+  if (inclure("PieceDate"))   donnees.PieceDate   = nettoyer(champs[idx.pieceDate]);
+  if (inclure("EcritureLib")) donnees.EcritureLib = nettoyer(champs[idx.ecritureLib]);
+
+  if (inclure("Debit") || inclure("Credit")) {
+    if (format === "avecSens") {
+      const sens    = nettoyer(champs[idx.sens]);
+      const montant = nettoyer(champs[idx.montant]);
+      if (inclure("Debit"))  donnees.Debit  = parseAmount(sens === "D" ? montant : "0,00");
+      if (inclure("Credit")) donnees.Credit = parseAmount(sens === "C" ? montant : "0,00");
+    } else {
+      if (inclure("Debit"))  donnees.Debit  = parseAmount(nettoyer(champs[idx.debit]));
+      if (inclure("Credit")) donnees.Credit = parseAmount(nettoyer(champs[idx.credit]));
+    }
   }
+
+  if (inclure("EcritureLet"))   donnees.EcritureLet   = nettoyer(champs[idx.ecritureLet]);
+  if (inclure("DateLet"))       donnees.DateLet       = nettoyer(champs[idx.dateLet]);
+  if (inclure("ValidDate"))     donnees.ValidDate     = nettoyer(champs[idx.validDate]);
+  if (inclure("MontantDevise")) donnees.MontantDevise = nettoyer(champs[idx.montantDevise]);
+  if (inclure("IDevise"))       donnees.IDevise       = nettoyer(champs[idx.iDevise]);
+
+  const inclureCompteLib  = champsSet === null ? !garderLignes : champsSet.has("CompteLib");
+  const inclureCompAuxLib = champsSet === null ? !garderLignes : champsSet.has("CompAuxLib");
+  if (inclureCompteLib)  donnees.CompteLib  = nettoyer(champs[idx.compteLib]);
+  if (inclureCompAuxLib) donnees.CompAuxLib = nettoyer(champs[idx.compAuxLib]);
+
   return donnees;
 }
 
@@ -449,4 +574,7 @@ function getSeparator(premiereLigne) {
   throw new Error("Séparateur non reconnu (attendu : tabulation ou pipe)");
 }
 
-const parseAmount = (str) => parseFloat(str.replace(',', '.'));
+const parseAmount = (str) => {
+  if (!str || str.trim() === '') return 0;
+  return parseFloat(str.replace(',', '.'));
+};
