@@ -1,26 +1,13 @@
-export interface Compte {
-  Libelle: string;
-}
+/**
+ * FEC Reader
+ * Part of @lasocietenouvelle/fec-reader
+ * https://github.com/La-Societe-Nouvelle/fec-reader
+ * License: EUPL-1.2
+ */
 
-export interface Anomalie {
-  /** Numéro de ligne dans le fichier source (1-indexé, en-tête inclus). */
-  Ligne: number;
-  Message: string;
-}
-
-export interface Journal {
-  Libelle: string;
-  NombreEcritures: number;
-  NombreLignes: number;
-  DerniereDate: string;
-  Ecritures: Record<string, Ecriture>;
-}
-
-export interface Ecriture {
-  EcritureDate: string;
-  /** Absent lorsque l'option `lignes: false` ou `onLigne` est utilisée. */
-  Lignes?: LigneEcriture[];
-}
+// ---------------------------------------------------------------------------
+// Types partagés — utilisés à la fois par FECReader et readFECLignes
+// ---------------------------------------------------------------------------
 
 export interface LigneEcriture {
   CompteNum: string;
@@ -35,6 +22,49 @@ export interface LigneEcriture {
   ValidDate: string;
   MontantDevise: string;
   IDevise: string;
+}
+
+/** Ligne transmise à `onLigne` — inclut CompteLib/CompAuxLib, retirés dans `Lignes[]` car déjà disponibles via `Comptes`/`ComptesAux`. */
+export interface LigneAvecLibelles extends LigneEcriture {
+  CompteLib: string;
+  CompAuxLib: string;
+}
+
+export interface LigneContexte {
+  journalCode: string;
+  journalLib: string;
+  ecritureNum: string;
+  ecritureDate: string;
+  compteNum: string;
+  compAuxNum: string;
+}
+
+export interface Anomalie {
+  /** Numéro de ligne dans le fichier source (1-indexé, en-tête inclus). */
+  Ligne: number;
+  Message: string;
+}
+
+// ---------------------------------------------------------------------------
+// FECReader — parsing complet, structure JSON en retour
+// ---------------------------------------------------------------------------
+
+export interface Compte {
+  Libelle: string;
+}
+
+export interface Ecriture {
+  EcritureDate: string;
+  /** Absent lorsque l'option `lignes: false` ou `onLigne` est utilisée. */
+  Lignes?: LigneEcriture[];
+}
+
+export interface Journal {
+  Libelle: string;
+  NombreEcritures: number;
+  NombreLignes: number;
+  DerniereDate: string;
+  Ecritures: Record<string, Ecriture>;
 }
 
 export interface FECData {
@@ -60,105 +90,55 @@ export interface FECData {
   };
 }
 
-/** Ligne transmise à `onLigne` — inclut CompteLib/CompAuxLib, retirés dans `Lignes[]` car déjà disponibles via `Comptes`/`ComptesAux`. */
-export interface LigneAvecLibelles extends LigneEcriture {
-  CompteLib: string;
-  CompAuxLib: string;
-}
-
-export interface LigneContexte {
-  journalCode: string;
-  journalLib: string;
-  ecritureNum: string;
-  ecritureDate: string;
-  compteNum: string;
-  compAuxNum: string;
-}
-
 export interface FECReaderOptions {
-  /**
-   * Si `false`, les lignes ne sont pas matérialisées dans `Ecritures[num].Lignes[]` :
-   * seuls les agrégats (`NombreEcritures`, `NombreLignes`, `DerniereDate`, `EcritureDate`)
-   * sont conservés. Réduit fortement la mémoire retenue sur les gros fichiers.
-   * @default true
-   */
+  /** Si `false`, `Ecritures[num].Lignes[]` n'est pas construit — seuls les agrégats sont conservés.
+   * @default true */
   lignes?: boolean;
-  /**
-   * Callback invoqué pour chaque ligne de données parsée. Lorsqu'il est fourni,
-   * `Ecritures[num].Lignes[]` n'est pas construit, quelle que soit la valeur de `lignes`.
-   */
+  /** Callback par ligne. Fourni, il désactive `Lignes[]` même si `lignes` vaut `true`. */
   onLigne?: (ligne: LigneAvecLibelles, contexte: LigneContexte) => void;
-  /**
-   * Nom du fichier d'origine (ex: "552100554FEC20231231.txt"). Si fourni, le SIREN et
-   * la date de clôture d'exercice sont extraits du nom (norme DGFiP : `<Siren>FEC<AAAAMMJJ>`)
-   * et exposés dans `Metadonnees.Fichier`. N'affecte pas le parsing du contenu.
-   */
+  /** Nom du fichier d'origine (`<Siren>FEC<AAAAMMJJ>`) pour extraire Siren/ClotureExercice. N'affecte pas le parsing. */
   nomFichier?: string;
-  /**
-   * Liste blanche des champs à construire pour chaque ligne (`Lignes[]` ou argument de
-   * `onLigne`). Si non fourni, tous les champs sont construits (comportement historique).
-   * Un nom de champ inconnu lève une erreur. `CompteLib`/`CompAuxLib` explicitement
-   * demandés priment toujours sur l'auto-exclusion habituelle en mode `lignes: true`.
-   */
+  /** Liste blanche des champs à construire par ligne. Un nom inconnu lève une erreur.
+   * `CompteLib`/`CompAuxLib` explicites priment sur l'auto-exclusion en mode `lignes: true`. */
   champs?: Array<keyof LigneAvecLibelles>;
 }
 
 /**
- * Parse un fichier FEC (Fichier des Écritures Comptables) et retourne les données structurées.
+ * Parse un fichier FEC et retourne les données structurées.
+ * Encodage auto-détecté sur les octets bruts : BOM UTF-8 → UTF-8 → Windows-1252.
  *
- * Accepte une chaîne pré-décodée ou des octets bruts (Buffer / ArrayBuffer / Uint8Array).
- * Lorsque des octets sont fournis, l'encodage est auto-détecté :
- * BOM UTF-8 → UTF-8 → Windows-1252 (fallback).
- *
- * @throws {Error} Si le séparateur n'est pas reconnu ou si des colonnes obligatoires sont absentes
- *   (cas irrécupérables — rien ne peut être parsé). Une ligne de données mal formée ne lève
- *   pas d'exception : elle est ignorée et signalée dans `Anomalies`.
+ * @throws {Error} Séparateur/colonnes d'en-tête invalides (cas irrécupérables). Une ligne
+ *   mal formée ne lève pas d'exception — elle est signalée dans `Anomalies`.
  */
 export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array, options?: FECReaderOptions): FECData;
 
-export interface FECLignesAsyncOptions {
-  /**
-   * Liste blanche des champs à construire pour chaque ligne. Mêmes règles et
-   * mêmes noms que `FECReaderOptions.champs`. Si non fourni, tous les champs
-   * sont construits.
-   */
+// ---------------------------------------------------------------------------
+// readFECLignes — itération async par lots, sans agrégat en retour
+// ---------------------------------------------------------------------------
+
+export interface ReadFECLignesOptions {
+  /** Même liste blanche que `FECReaderOptions.champs`. */
   champs?: Array<keyof LigneAvecLibelles>;
-  /**
-   * Nombre de lignes par lot yield, et nombre de lignes entre deux cessions de
-   * la main à l'event loop (`await setImmediate`). Les lots réduisent le
-   * nombre de points de suspension du générateur async : un `for await` qui
-   * consommerait une ligne à la fois paierait le coût de résolution de
-   * promesse du protocole async à chaque ligne (amplifié sous un contexte
-   * `AsyncLocalStorage`, ex. une Server Action Next.js — voir
-   * `docs/superpowers/specs/2026-07-07-fec-lignes-async-design.md`).
-   * @default 1000
-   */
+  /** Lignes par lot yield, et par cession à l'event loop (`await setImmediate`). Le
+   * batching évite le coût par-ligne du protocole async — voir CHANGELOG.md [2.0.0-beta.1].
+   * @default 1000 */
   intervalleCedeMain?: number;
 }
 
-export type FECLigneAsyncItem =
+export type ReadFECLignesItem =
   | { ligne: LigneAvecLibelles; contexte: LigneContexte }
   | { anomalie: Anomalie };
 
 /**
- * Itère de façon asynchrone sur les lignes de données d'un fichier FEC, par
- * lots de `intervalleCedeMain` items, en cédant la main à l'event loop
- * (`setImmediate`) après chaque lot complet — pour ne pas bloquer un serveur
- * à process partagé pendant un parsing volumineux.
+ * Itère de façon asynchrone sur les lignes d'un FEC, par lots de `intervalleCedeMain`
+ * items, en cédant la main à l'event loop entre deux lots. Ne construit aucun agrégat
+ * (`Journaux`/`Comptes`) contrairement à `FECReader` — flux pur.
  *
- * Contrairement à `FECReader`, ne construit aucun agrégat : ni `Journaux`, ni
- * `Comptes`, ni valeur de retour. Chaque item d'un lot est soit une ligne
- * valide (`{ ligne, contexte }`), soit une anomalie (`{ anomalie }`) pour une
- * ligne mal formée — le flux continue dans les deux cas.
+ * @throws {Error} Mêmes cas irrécupérables que `FECReader`, levés au premier `.next()`.
  *
- * @throws {Error} Si le séparateur n'est pas reconnu ou si des colonnes
- *   obligatoires sont absentes — levée de façon synchrone au premier appel
- *   à `.next()` (donc à la première itération du `for await`), avant tout yield.
- *
- * Node.js uniquement — utilise `setImmediate` en interne, indisponible dans
- * les navigateurs, contrairement à `FECReader`.
+ * Node.js uniquement (`setImmediate`) — contrairement à `FECReader`, pas utilisable en navigateur.
  */
-export function FECLignesAsync(
+export function readFECLignes(
   input: string | Buffer | ArrayBuffer | Uint8Array,
-  options?: FECLignesAsyncOptions
-): AsyncGenerator<FECLigneAsyncItem[]>;
+  options?: ReadFECLignesOptions
+): AsyncGenerator<ReadFECLignesItem[]>;

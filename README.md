@@ -122,6 +122,31 @@ const complet = FECReader(buffer, {
 });
 ```
 
+**Rapport simplifié par journal :**
+
+```js
+const result = FECReader(buffer, {
+  champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'], // Ignore PieceRef, EcritureLet, etc.
+});
+
+console.log(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0]);
+// { CompteNum: "60600", CompteLib: "Fournitures admin.", Debit: 1200, Credit: 0 }
+```
+
+**Vérification de cohérence SIREN/date :**
+
+```js
+const result = FECReader(buffer, { nomFichier: "123456789FEC20241231.txt" });
+
+// Vérifier que la date de clôture dans le nom correspond à la période du fichier
+if (result.Metadonnees.Fichier.ClotureExercice !== result.Metadonnees.Periode.DateFin) {
+  console.warn("La date de clôture dans le nom de fichier ne correspond pas à la période du FEC !");
+}
+
+const siren = result.Metadonnees.Fichier.Siren;
+if (!siren) console.warn("Le nom de fichier ne suit pas la convention DGFiP.");
+```
+
 **Erreurs levées** (cas irrécupérables — rien ne peut être parsé) :
 
 | Condition | Message |
@@ -149,16 +174,16 @@ if (result.Anomalies.length > 0) {
 
 ---
 
-### Itération asynchrone (`FECLignesAsync`)
+### Itération asynchrone (`readFECLignes`)
 
-Pour un parsing volumineux sur un serveur à process partagé, `FECLignesAsync`
+Pour un parsing volumineux sur un serveur à process partagé, `readFECLignes`
 permet de traiter les lignes sans bloquer l'event loop. Il yield des **lots**
 d'items (pas une ligne à la fois) :
 
 ```js
-import { FECLignesAsync } from '@lasocietenouvelle/fec-reader';
+import { readFECLignes } from '@lasocietenouvelle/fec-reader';
 
-for await (const lot of FECLignesAsync(buffer, { champs: ['CompteNum', 'Debit', 'Credit'] })) {
+for await (const lot of readFECLignes(buffer, { champs: ['CompteNum', 'Debit', 'Credit'] })) {
   for (const item of lot) {
     if ('anomalie' in item) {
       console.warn(item.anomalie.Message);
@@ -170,7 +195,7 @@ for await (const lot of FECLignesAsync(buffer, { champs: ['CompteNum', 'Debit', 
 }
 ```
 
-Contrairement à `FECReader`, `FECLignesAsync` ne construit aucun agrégat
+Contrairement à `FECReader`, `readFECLignes` ne construit aucun agrégat
 (`Journaux`/`Comptes`/`Anomalies`) : c'est un flux pur. Pour obtenir l'agrégat
 en plus du streaming, faites un second appel à `FECReader` (synchrone, rapide)
 sur le même contenu.
@@ -189,12 +214,48 @@ sur ~420 000 lignes était 2 à 4x plus lent que l'équivalent synchrone, et
 instable (RSS croissante d'un appel à l'autre dans le même process). Yield par
 lot de `intervalleCedeMain` ramène le nombre de points de suspension du
 générateur d'un par ligne à un par lot, ce qui restaure une performance stable
-et comparable au parsing synchrone. Détails et mesures dans
-`docs/superpowers/specs/2026-07-07-fec-lignes-async-design.md`.
+et comparable au parsing synchrone. Détails et mesures dans le
+`CHANGELOG.md` (section `[2.0.0-beta.1]`).
 
-`FECLignesAsync` est réservé à Node.js : il utilise `setImmediate` en interne,
+`readFECLignes` est réservé à Node.js : il utilise `setImmediate` en interne,
 indisponible dans les navigateurs (contrairement à `FECReader`, qui accepte
 `ArrayBuffer` pour un usage `FileReader` en environnement navigateur).
+
+**Traitement par lots avec suivi de progression :**
+
+```js
+import { readFECLignes } from '@lasocietenouvelle/fec-reader';
+
+let lignesTraitees = 0;
+const montantsTotaux = { debit: 0, credit: 0 };
+
+for await (const lot of readFECLignes(buffer, {
+  intervalleCedeMain: 5000, // Cède la main tous les 5000 lignes
+  champs: ['CompteNum', 'Debit', 'Credit'],
+})) {
+  for (const item of lot) {
+    if ('anomalie' in item) {
+      console.warn(`Ligne ${item.anomalie.Ligne} : ${item.anomalie.Message}`);
+      continue;
+    }
+    montantsTotaux.debit += item.ligne.Debit;
+    montantsTotaux.credit += item.ligne.Credit;
+    lignesTraitees++;
+  }
+  console.log(`Traité : ${lignesTraitees} lignes...`);
+}
+```
+
+---
+
+### Tableau récapitulatif des options
+
+| Option | Type | Défaut | Description | Cas d'usage |
+|--------|------|--------|-------------|-------------|
+| `lignes` | `boolean` | `true` | Si `false`, désactive `Ecritures[num].Lignes[]` | Prévisualisation, métadonnées, gros fichiers |
+| `onLigne` | `(ligne, contexte) => void` | `null` | Callback par ligne (`ligne`, `contexte`) | Streaming, agrégation custom |
+| `nomFichier` | `string` | `null` | Nom du fichier (ex : `"SIRENFECYYYYMMDD.txt"`) | Extraction SIREN/date de clôture |
+| `champs` | `string[]` | `null` | Liste blanche des champs à construire | Réduction mémoire, performance |
 
 ---
 
@@ -259,6 +320,35 @@ Forme commune à `Comptes` et `ComptesAux` :
 | Propriété | Type | Description |
 |-----------|------|-------------|
 | `Libelle` | `string` | Libellé du compte |
+
+---
+
+## Migration depuis v1.x
+
+### ⚠️ Changement cassant : gestion des lignes mal formées
+
+**Avant (v1.x)** :
+
+```js
+try {
+  const result = FECReader(buffer);
+} catch (e) {
+  console.error("Erreur :", e.message); // Incluait les lignes mal formées
+}
+```
+
+**Depuis v2.0** : les lignes mal formées ne lèvent plus d'exception — elles sont signalées dans `result.Anomalies` et le parsing continue.
+
+```js
+const result = FECReader(buffer);
+if (result.Anomalies.length > 0) {
+  console.warn(`${result.Anomalies.length} ligne(s) ignorée(s) :`);
+  result.Anomalies.forEach(a => console.warn(`Ligne ${a.Ligne} : ${a.Message}`));
+}
+// result.Journaux, result.Comptes, etc. contiennent les données valides
+```
+
+Les erreurs irrécupérables (séparateur non reconnu, colonnes manquantes dans l'en-tête) lèvent toujours une exception — seul le traitement des lignes mal formées a changé.
 
 ---
 
