@@ -12,7 +12,7 @@ async function collectLots(iterable) {
 }
 
 // La plupart des tests ne s'intéressent qu'aux items eux-mêmes, pas au
-// découpage en lots — `collect` aplatit donc les lots en une liste d'items,
+// découpage en lots : `collect` aplatit donc les lots en une liste d'items,
 // dans l'ordre du fichier.
 async function collect(iterable) {
   return (await collectLots(iterable)).flat();
@@ -193,7 +193,7 @@ describe('anomalies', () => {
     expect(items).toHaveLength(1);
     expect(items[0].anomalie.Ligne).toBe(2);
     expect(items[0].anomalie.Message).toBe(
-      `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne 2 : ${colonnes.slice(-3).join(', ')}. Vérifiez le format d'export.`
+      `Fichier FEC incomplet, colonne(s) manquante(s) à la ligne 2 : ${colonnes.slice(-3).join(', ')}. Vérifiez le format d'export.`
     );
   });
 
@@ -222,7 +222,7 @@ describe('anomalies', () => {
     expect(items).toHaveLength(1);
     expect(items[0].anomalie.Ligne).toBe(2);
     expect(items[0].anomalie.Message).toBe(
-      `Fichier FEC invalide — trop de colonnes à la ligne 2 (3 colonne(s) en trop). Vérifiez le format d'export.`
+      `Fichier FEC invalide, trop de colonnes à la ligne 2 (3 colonne(s) en trop). Vérifiez le format d'export.`
     );
   });
 

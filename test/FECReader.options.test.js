@@ -17,7 +17,7 @@ const sansLignes = (journaux) => {
   return copie;
 };
 
-describe('FECReader — options', () => {
+describe('FECReader, options', () => {
   describe('{ lignes: false }', () => {
     it("n'attache pas de tableau Lignes aux écritures", () => {
       const result = FECReader(fixture('sample_tab.txt'), { lignes: false });

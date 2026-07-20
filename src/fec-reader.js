@@ -17,7 +17,7 @@ const COLONNES_FEC            = [...COLONNES_PREFIXE, "Debit",   "Credit",   ...
 const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...COLONNES_SUFFIXE];
 
 // Champs disponibles pour l'option `champs` (clés possibles d'une ligne construite,
-// dans l'ordre canonique utilisé pour la construction — cf. buildRow).
+// dans l'ordre canonique utilisé pour la construction, cf. buildRow).
 const CHAMPS_LIGNE_DISPONIBLES = [
   "CompteNum", "CompAuxNum", "PieceRef", "PieceDate", "EcritureLib",
   "Debit", "Credit",
@@ -29,8 +29,8 @@ const CHAMPS_LIGNE_DISPONIBLES = [
  * Parse a FEC file (Fichier des Écritures Comptables) and return structured data.
  *
  * Accepted input types:
- *   - Buffer         : Node.js buffer — encoding auto-detected
- *   - ArrayBuffer    : browser FileReader result — encoding auto-detected
+ *   - Buffer         : Node.js buffer, encoding auto-detected
+ *   - ArrayBuffer    : browser FileReader result, encoding auto-detected
  *   - Uint8Array     : encoding auto-detected
  *   - string         : passed through as-is (no encoding conversion)
  *
@@ -66,9 +66,9 @@ const CHAMPS_LIGNE_DISPONIBLES = [
  *   auto-exclusion in `lignes: true` mode.
  * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], Metadonnees: Object }}
  * @throws {Error} If the file has an unrecognized separator or missing header columns
- *   (unrecoverable — nothing can be parsed). Malformed individual rows do not throw:
+ *   (unrecoverable, nothing can be parsed). Malformed individual rows do not throw:
  *   they are skipped and reported in `Anomalies`. A row with a blank `Debit`/`Credit`
- *   (or `Montant`) column is not skipped either — it is parsed with the amount treated
+ *   (or `Montant`) column is not skipped either: it is parsed with the amount treated
  *   as 0 and also reported in `Anomalies`, since DGFiP expects an explicit "0,00" there.
  */
 export function FECReader(input, options = {}) {
@@ -95,7 +95,7 @@ export function FECReader(input, options = {}) {
  * returns a Promise, so a `for await` consuming one item per row pays that
  * promise-resolution cost once per row. Under a request-scoped
  * `AsyncLocalStorage` context (e.g. a Next.js Server Action) that cost is
- * amplified — each continuation must restore the ALS context — and at
+ * amplified (each continuation must restore the ALS context), and at
  * hundreds of thousands of rows this made per-row yielding measurably slower
  * and less stable than batching (regression found and fixed 2026-07-07; see
  * CHANGELOG.md [1.1.0-beta.1] for the measurements). Batching
@@ -103,10 +103,10 @@ export function FECReader(input, options = {}) {
  * `intervalleCedeMain` rows.
  *
  * Header errors (unrecognized separator, missing required columns) throw
- * synchronously on the first `.next()` call, before any yield — same
+ * synchronously on the first `.next()` call, before any yield: same
  * unrecoverable-error contract as `FECReader`.
  *
- * Node.js only — uses `setImmediate` internally, not available in browsers,
+ * Node.js only, uses `setImmediate` internally, not available in browsers,
  * unlike `FECReader`.
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
@@ -214,9 +214,9 @@ function validateRowColumns(rowFields, header, lineIndex) {
   if (missing.length >= header.length / 2) {
     return `Le fichier FEC semble corrompu ou mal exporté (ligne ${lineIndex + 1} : ${rowFields.length} colonne(s) lue(s) sur ${header.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
   } else if (missing.length > 0) {
-    return `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne ${lineIndex + 1} : ${missing.join(", ")}. Vérifiez le format d'export.`;
+    return `Fichier FEC incomplet, colonne(s) manquante(s) à la ligne ${lineIndex + 1} : ${missing.join(", ")}. Vérifiez le format d'export.`;
   }
-  return `Fichier FEC invalide — trop de colonnes à la ligne ${lineIndex + 1} (${extra} colonne(s) en trop). Vérifiez le format d'export.`;
+  return `Fichier FEC invalide, trop de colonnes à la ligne ${lineIndex + 1} (${extra} colonne(s) en trop). Vérifiez le format d'export.`;
 }
 
 /**
@@ -298,12 +298,12 @@ function decodeInput(input) {
     return { content: new TextDecoder("utf-8").decode(bytes.slice(3)), encoding: "UTF-8 BOM" };
   }
 
-  // Valid UTF-8 — strict decode throws on any invalid byte sequence
+  // Valid UTF-8: strict decode throws on any invalid byte sequence
   try {
     const utf8 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return { content: utf8, encoding: "UTF-8" };
   } catch {
-    // Fallback: Windows-1252 — compatible avec ISO 8859-15 (norme DGFiP).
+    // Fallback: Windows-1252, compatible avec ISO 8859-15 (norme DGFiP).
     return { content: new TextDecoder("windows-1252").decode(bytes), encoding: "Windows-1252" };
   }
 }
@@ -526,13 +526,13 @@ function buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDa
  *
  * Follows a fixed canonical order of `if (include(...))` checks, always run in the
  * same sequence for a given `fieldsSet`/`format`/`keepLines` (all invariant for
- * the whole file) — the object shape never varies from one row to the next, letting
+ * the whole file), so the object shape never varies from one row to the next, letting
  * V8 keep the same hidden class across all rows.
  *
  * `CompteLib`/`CompAuxLib` follow a special rule: with no `fieldsSet` (default, all
  * fields), they are omitted when `keepLines` (already available via `Comptes`/
  * `ComptesAux`) and included otherwise (`onLigne` mode, row never retained). When
- * `fieldsSet` is explicit, it always wins over that default — the caller's choice.
+ * `fieldsSet` is explicit, it always wins over that default: the caller's choice.
  *
  * @param {string[]} fields
  * @param {Function} clean - Field cleaner (strips quotes and whitespace)
@@ -556,7 +556,7 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   // Une colonne Debit/Credit (ou Montant côté avecSens, pour le sens réellement porté par
   // la ligne) vide dans le fichier source est non conforme à la norme DGFiP (le "0,00"
   // explicite est attendu) : on la traite comme 0 sans bloquer le parsing, mais on le
-  // signale via `montantsVides` — contrairement au "0,00" synthétique posé côté avecSens
+  // signale via `montantsVides`, contrairement au "0,00" synthétique posé côté avecSens
   // pour le sens non porté par la ligne, qui n'a rien d'anormal.
   if (include("Debit") || include("Credit")) {
     if (format === "avecSens") {
@@ -608,7 +608,7 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
 
 /**
  * Build an `Anomalies`-style message for a row whose Debit/Credit (or Montant) column
- * was present but empty — non-conforming per DGFiP (an explicit "0,00" is expected),
+ * was present but empty: non-conforming per DGFiP (an explicit "0,00" is expected),
  * but not fatal: the row is still parsed, with the amount treated as 0.
  *
  * @param {string[]} champs - Field names affected (`"Debit"` and/or `"Credit"`)

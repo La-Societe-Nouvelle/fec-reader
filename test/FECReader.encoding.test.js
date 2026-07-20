@@ -55,7 +55,7 @@ function toWindows1252(text) {
   return new Uint8Array(bytes);
 }
 
-describe('FECReader — détection d\'encodage', () => {
+describe('FECReader, détection d\'encodage', () => {
 
   it('accepte un Buffer UTF-8 et préserve les accents', () => {
     const buffer = Buffer.from(FEC_TEXT, 'utf8');

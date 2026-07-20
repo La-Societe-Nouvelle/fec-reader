@@ -263,7 +263,7 @@ describe('FECReader', () => {
     });
   });
 
-  describe('montants vides — signalement dans Anomalies', () => {
+  describe('montants vides, signalement dans Anomalies', () => {
     it('signale une anomalie quand Debit est vide (format standard)', () => {
       const emptyDebit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
       const result = FECReader(makeFEC(emptyDebit));

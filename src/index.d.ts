@@ -6,7 +6,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Types partagés — utilisés à la fois par FECReader et readFECLignes
+// Types partagés, utilisés à la fois par FECReader et readFECLignes
 // ---------------------------------------------------------------------------
 
 export interface LigneEcriture {
@@ -24,7 +24,7 @@ export interface LigneEcriture {
   IDevise: string;
 }
 
-/** Ligne transmise à `onLigne` — inclut CompteLib/CompAuxLib, retirés dans `Lignes[]` car déjà disponibles via `Comptes`/`ComptesAux`. */
+/** Ligne transmise à `onLigne` : inclut CompteLib/CompAuxLib, retirés dans `Lignes[]` car déjà disponibles via `Comptes`/`ComptesAux`. */
 export interface LigneAvecLibelles extends LigneEcriture {
   CompteLib: string;
   CompAuxLib: string;
@@ -46,7 +46,7 @@ export interface Anomalie {
 }
 
 // ---------------------------------------------------------------------------
-// FECReader — parsing complet, structure JSON en retour
+// FECReader, parsing complet, structure JSON en retour
 // ---------------------------------------------------------------------------
 
 export interface Compte {
@@ -93,7 +93,7 @@ export interface FECData {
 }
 
 export interface FECReaderOptions {
-  /** Si `false`, `Ecritures[num].Lignes[]` n'est pas construit — seuls les agrégats sont conservés.
+  /** Si `false`, `Ecritures[num].Lignes[]` n'est pas construit : seuls les agrégats sont conservés.
    * @default true */
   lignes?: boolean;
   /** Callback par ligne. Fourni, il désactive `Lignes[]` même si `lignes` vaut `true`. */
@@ -110,19 +110,19 @@ export interface FECReaderOptions {
  * Encodage auto-détecté sur les octets bruts : BOM UTF-8 → UTF-8 → Windows-1252.
  *
  * @throws {Error} Séparateur/colonnes d'en-tête invalides (cas irrécupérables). Une ligne
- *   mal formée ne lève pas d'exception — elle est signalée dans `Anomalies`.
+ *   mal formée ne lève pas d'exception : elle est signalée dans `Anomalies`.
  */
 export function FECReader(input: string | Buffer | ArrayBuffer | Uint8Array, options?: FECReaderOptions): FECData;
 
 // ---------------------------------------------------------------------------
-// readFECLignes — itération async par lots, sans agrégat en retour
+// readFECLignes, itération async par lots, sans agrégat en retour
 // ---------------------------------------------------------------------------
 
 export interface ReadFECLignesOptions {
   /** Même liste blanche que `FECReaderOptions.champs`. */
   champs?: Array<keyof LigneAvecLibelles>;
   /** Lignes par lot yield, et par cession à l'event loop (`await setImmediate`). Le
-   * batching évite le coût par-ligne du protocole async — voir CHANGELOG.md [1.1.0-beta.1].
+   * batching évite le coût par-ligne du protocole async, voir CHANGELOG.md [1.1.0-beta.1].
    * @default 1000 */
   intervalleCedeMain?: number;
 }
@@ -134,11 +134,11 @@ export type ReadFECLignesItem =
 /**
  * Itère de façon asynchrone sur les lignes d'un FEC, par lots de `intervalleCedeMain`
  * items, en cédant la main à l'event loop entre deux lots. Ne construit aucun agrégat
- * (`Journaux`/`Comptes`) contrairement à `FECReader` — flux pur.
+ * (`Journaux`/`Comptes`) contrairement à `FECReader` : flux pur.
  *
  * @throws {Error} Mêmes cas irrécupérables que `FECReader`, levés au premier `.next()`.
  *
- * Node.js uniquement (`setImmediate`) — contrairement à `FECReader`, pas utilisable en navigateur.
+ * Node.js uniquement (`setImmediate`), contrairement à `FECReader`, pas utilisable en navigateur.
  */
 export function readFECLignes(
   input: string | Buffer | ArrayBuffer | Uint8Array,
