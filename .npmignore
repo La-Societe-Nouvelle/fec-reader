@@ -1,2 +1,5 @@
-fec-preview.mjs
+# Tests
 test/
+
+# Test fixtures (already ignored by default, but explicit for clarity)
+test/fixtures/

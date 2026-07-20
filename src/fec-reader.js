@@ -1,4 +1,9 @@
-// La Société Nouvelle
+/**
+ * FEC Reader
+ * Part of @lasocietenouvelle/fec-reader
+ * https://github.com/La-Societe-Nouvelle/fec-reader
+ * License: EUPL-1.2
+ */
 
 const COLONNES_PREFIXE = [
   "JournalCode", "JournalLib", "EcritureNum", "EcritureDate",
@@ -11,12 +16,21 @@ const COLONNES_SUFFIXE = [
 const COLONNES_FEC            = [...COLONNES_PREFIXE, "Debit",   "Credit",   ...COLONNES_SUFFIXE];
 const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...COLONNES_SUFFIXE];
 
+// Champs disponibles pour l'option `champs` (clés possibles d'une ligne construite,
+// dans l'ordre canonique utilisé pour la construction, cf. buildRow).
+const CHAMPS_LIGNE_DISPONIBLES = [
+  "CompteNum", "CompAuxNum", "PieceRef", "PieceDate", "EcritureLib",
+  "Debit", "Credit",
+  "EcritureLet", "DateLet", "ValidDate", "MontantDevise", "IDevise",
+  "CompteLib", "CompAuxLib",
+];
+
 /**
  * Parse a FEC file (Fichier des Écritures Comptables) and return structured data.
  *
  * Accepted input types:
- *   - Buffer         : Node.js buffer — encoding auto-detected
- *   - ArrayBuffer    : browser FileReader result — encoding auto-detected
+ *   - Buffer         : Node.js buffer, encoding auto-detected
+ *   - ArrayBuffer    : browser FileReader result, encoding auto-detected
  *   - Uint8Array     : encoding auto-detected
  *   - string         : passed through as-is (no encoding conversion)
  *
@@ -30,14 +44,232 @@ const COLONNES_FEC_AVEC_SENS  = [...COLONNES_PREFIXE, "Montant", "Sens",     ...
  *   - Columns   : standard Débit/Crédit or variant Montant/Sens
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
- * @throws {Error} If the file has an unrecognized separator or missing columns
+ * @param {Object} [options]
+ * @param {boolean} [options.lignes=true] - If false, rows are not materialized into
+ *   `Ecritures[num].Lignes[]` (only the existing aggregates are kept). Significantly
+ *   reduces retained memory on large files.
+ * @param {(ligne: Object, contexte: Object) => void} [options.onLigne] - Callback invoked
+ *   for each row, with a cleaned context (`journalCode`, `journalLib`, `ecritureNum`,
+ *   `ecritureDate`, `compteNum`, `compAuxNum`). Never triggers construction of `Lignes[]`.
+ *   The row includes `CompteLib`/`CompAuxLib` (absent in classic `Lignes[]` mode, but
+ *   useful here since nothing is retained after the call).
+ * @param {string} [options.nomFichier] - Original filename (e.g. "552100554FEC20231231.txt").
+ *   If provided, the SIREN and fiscal year-end date are extracted from the name (DGFiP
+ *   convention: `<Siren>FEC<AAAAMMJJ>`) and exposed in `Metadonnees.Fichier`. Does not
+ *   affect content parsing.
+ * @param {string[]} [options.champs] - Whitelist of fields to build for each row
+ *   (`Lignes[]` or the `onLigne` argument). Among: `CompteNum`, `CompAuxNum`,
+ *   `PieceRef`, `PieceDate`, `EcritureLib`, `Debit`, `Credit`, `EcritureLet`, `DateLet`,
+ *   `ValidDate`, `MontantDevise`, `IDevise`, `CompteLib`, `CompAuxLib`. If not provided,
+ *   all fields are built (historical behavior). An unknown field name throws.
+ *   `CompteLib`/`CompAuxLib` explicitly requested always win over the usual
+ *   auto-exclusion in `lignes: true` mode.
+ * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], Metadonnees: Object }}
+ * @throws {Error} If the file has an unrecognized separator or missing header columns
+ *   (unrecoverable, nothing can be parsed). Malformed individual rows do not throw:
+ *   they are skipped and reported in `Anomalies`. A row with a blank `Debit`/`Credit`
+ *   (or `Montant`) column is not skipped either: it is parsed with the amount treated
+ *   as 0 and also reported in `Anomalies`, since DGFiP expects an explicit "0,00" there.
  */
-export function FECReader(input) {
-  const { contenu, encodage } = decodeInput(input);
-  const { separateur, entete, format, indexColonnes, colonnes } = parseHeader(contenu);
-  const { journaux, comptes, comptesAux, premiereDate, derniereDate } = collectData(contenu, separateur, entete, indexColonnes, colonnes, format);
-  return buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format);
+export function FECReader(input, options = {}) {
+  const { lignes = true, onLigne = null, nomFichier = null, champs = null } = options;
+  const champsSet = validateFields(champs);
+  const { content, encoding } = decodeInput(input);
+  const { separateur, header, format, columnIndexes } = parseHeader(content);
+  const { journaux, comptes, comptesAux, firstDate, lastDate, anomalies } = collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet });
+  const { siren, clotureExercice } = parseFilename(nomFichier);
+  return buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice);
+}
+
+/**
+ * Stream FEC rows as an async iterator of batches, yielding periodically to
+ * the event loop so a large file does not block a shared-process server.
+ *
+ * Unlike `FECReader`, this builds no aggregate: no `Journaux`, `Comptes`,
+ * `ComptesAux`, or return value. Each yielded batch is an array of up to
+ * `intervalleCedeMain` items, each either:
+ *   - `{ ligne, contexte }` for a valid row (same shape as `onLigne`'s arguments)
+ *   - `{ anomalie: { Ligne, Message } }` for a malformed row (skipped, not thrown)
+ *
+ * Rows are NOT yielded one at a time: an async generator's `.next()` always
+ * returns a Promise, so a `for await` consuming one item per row pays that
+ * promise-resolution cost once per row. Under a request-scoped
+ * `AsyncLocalStorage` context (e.g. a Next.js Server Action) that cost is
+ * amplified (each continuation must restore the ALS context), and at
+ * hundreds of thousands of rows this made per-row yielding measurably slower
+ * and less stable than batching (regression found and fixed 2026-07-07; see
+ * CHANGELOG.md [1.1.0-beta.1] for the measurements). Batching
+ * reduces the number of suspension points from one per row to one per
+ * `intervalleCedeMain` rows.
+ *
+ * Header errors (unrecognized separator, missing required columns) throw
+ * synchronously on the first `.next()` call, before any yield: same
+ * unrecoverable-error contract as `FECReader`.
+ *
+ * Node.js only, uses `setImmediate` internally, not available in browsers,
+ * unlike `FECReader`.
+ *
+ * @param {string|Buffer|ArrayBuffer|Uint8Array} input
+ * @param {Object} [options]
+ * @param {string[]} [options.champs] - Same whitelist as `FECReader`'s `options.champs`.
+ * @param {number} [options.intervalleCedeMain=1000] - Number of rows per yielded
+ *   batch, and number of rows between two `await setImmediate` yields to the event loop.
+ * @returns {AsyncGenerator<Array<{ligne: Object, contexte: Object}|{anomalie: {Ligne: number, Message: string}}>>}
+ * @throws {Error} If the file has an unrecognized separator or missing header columns.
+ */
+export async function* readFECLignes(input, options = {}) {
+  const { champs = null, intervalleCedeMain = 1000 } = options;
+  const champsSet = validateFields(champs);
+  const { content } = decodeInput(input);
+  const { separateur, header, format, columnIndexes } = parseHeader(content);
+
+  const iJournalCode  = columnIndexes["JournalCode"];
+  const iJournalLib   = columnIndexes["JournalLib"];
+  const iEcritureNum  = columnIndexes["EcritureNum"];
+  const iEcritureDate = columnIndexes["EcritureDate"];
+  const iCompteNum    = columnIndexes["CompteNum"];
+  const iCompAuxNum   = columnIndexes["CompAuxNum"];
+
+  const clean = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
+
+  const lineIndex = {
+    compteNum:     iCompteNum,
+    compAuxNum:    iCompAuxNum,
+    compteLib:     columnIndexes["CompteLib"],
+    compAuxLib:    columnIndexes["CompAuxLib"],
+    pieceRef:      columnIndexes["PieceRef"],
+    pieceDate:     columnIndexes["PieceDate"],
+    ecritureLib:   columnIndexes["EcritureLib"],
+    debit:         columnIndexes["Debit"],
+    credit:        columnIndexes["Credit"],
+    montant:       columnIndexes["Montant"],
+    sens:          columnIndexes["Sens"],
+    ecritureLet:   columnIndexes["EcritureLet"],
+    dateLet:       columnIndexes["DateLet"],
+    validDate:     columnIndexes["ValidDate"],
+    montantDevise: columnIndexes["MontantDevise"],
+    iDevise:       columnIndexes["IDevise"],
+  };
+
+  const firstNewlineIndex = content.indexOf("\n");
+  let lineStart = firstNewlineIndex + 1;
+  let lineIndexCounter = 0;
+  let batch = [];
+
+  while (lineStart < content.length) {
+    let lineEnd = content.indexOf("\n", lineStart);
+    if (lineEnd === -1) lineEnd = content.length;
+
+    const rawLine = content.slice(lineStart, lineEnd).replace("\r", "");
+    lineStart = lineEnd + 1;
+    lineIndexCounter++;
+
+    if (rawLine === "") continue;
+
+    const rowFields = rawLine.split(separateur);
+
+    const messageAnomalie = validateRowColumns(rowFields, header, lineIndexCounter);
+    if (messageAnomalie) {
+      batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageAnomalie } });
+    } else {
+      const { data: ligne, montantsVides } = buildRow(rowFields, clean, lineIndex, false, champsSet, format);
+      if (montantsVides.length > 0) {
+        batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageMontantVide(montantsVides, lineIndexCounter + 1) } });
+      }
+      const contexte = buildContext(rowFields, clean, {
+        iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum,
+      });
+      batch.push({ ligne, contexte });
+    }
+
+    if (batch.length >= intervalleCedeMain) {
+      yield batch;
+      batch = [];
+      await new Promise(setImmediate);
+    }
+  }
+
+  if (batch.length > 0) yield batch;
+}
+
+/**
+ * Reconcile a row's column count against the header, tolerating 1-2 missing
+ * trailing columns (some software omits the final separator when there's no
+ * currency). Mutates `rowFields` in place when padding is applied.
+ *
+ * @param {string[]} rowFields
+ * @param {string[]} header
+ * @param {number} lineIndex - 1-indexed line number (before the +1 used in messages)
+ * @returns {string|null} An anomaly message if the row cannot be reconciled, else `null`.
+ */
+function validateRowColumns(rowFields, header, lineIndex) {
+  if (rowFields.length < header.length && rowFields.length >= header.length - 2) {
+    while (rowFields.length < header.length) rowFields.push("");
+  }
+
+  if (rowFields.length === header.length) return null;
+
+  const missing = rowFields.length < header.length ? header.slice(rowFields.length) : [];
+  const extra    = rowFields.length > header.length ? rowFields.length - header.length : 0;
+  if (missing.length >= header.length / 2) {
+    return `Le fichier FEC semble corrompu ou mal exporté (ligne ${lineIndex + 1} : ${rowFields.length} colonne(s) lue(s) sur ${header.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
+  } else if (missing.length > 0) {
+    return `Fichier FEC incomplet, colonne(s) manquante(s) à la ligne ${lineIndex + 1} : ${missing.join(", ")}. Vérifiez le format d'export.`;
+  }
+  return `Fichier FEC invalide, trop de colonnes à la ligne ${lineIndex + 1} (${extra} colonne(s) en trop). Vérifiez le format d'export.`;
+}
+
+/**
+ * Build the per-row context object (journal/écriture/compte identifiers) shared
+ * between `collectData`'s `onLigne` callback and `readFECLignes`'s yielded item.
+ *
+ * @param {string[]} rowFields
+ * @param {Function} clean
+ * @param {Object} contextIdx - `{ iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum }`
+ * @returns {{ journalCode: string, journalLib: string, ecritureNum: string, ecritureDate: string, compteNum: string, compAuxNum: string }}
+ */
+function buildContext(rowFields, clean, contextIdx) {
+  return {
+    journalCode:  clean(rowFields[contextIdx.iJournalCode]),
+    journalLib:   clean(rowFields[contextIdx.iJournalLib]),
+    ecritureNum:  clean(rowFields[contextIdx.iEcritureNum]),
+    ecritureDate: clean(rowFields[contextIdx.iEcritureDate]),
+    compteNum:    clean(rowFields[contextIdx.iCompteNum]),
+    compAuxNum:   clean(rowFields[contextIdx.iCompAuxNum]),
+  };
+}
+
+/**
+ * Validate `options.champs` against the known set of row field names.
+ *
+ * @param {string[]|null} fields
+ * @returns {Set<string>|null} `null` when `fields` is not provided (all fields kept).
+ * @throws {Error} If `fields` contains an unknown field name.
+ */
+function validateFields(fields) {
+  if (fields === null) return null;
+  if (fields.length === 0) {
+    throw new Error('FECReader : l\'option champs ne peut pas être un tableau vide');
+  }
+  const invalides = fields.filter((c) => !CHAMPS_LIGNE_DISPONIBLES.includes(c));
+  if (invalides.length > 0) {
+    throw new Error(`FECReader : champ(s) invalide(s) dans l'option champs : ${invalides.join(', ')}`);
+  }
+  return new Set(fields);
+}
+
+/**
+ * Extract SIREN and fiscal year-end date from a FEC filename, per the DGFiP
+ * naming convention `<Siren>FEC<AAAAMMJJ>[...]`.
+ *
+ * @param {string|null} filename
+ * @returns {{ siren: string|null, clotureExercice: string|null }}
+ */
+function parseFilename(filename) {
+  if (!filename) return { siren: null, clotureExercice: null };
+  const correspondance = /(\d{9,14})FEC(\d{8})/i.exec(filename);
+  if (!correspondance) return { siren: null, clotureExercice: null };
+  return { siren: correspondance[1], clotureExercice: correspondance[2] };
 }
 
 /**
@@ -45,10 +277,10 @@ export function FECReader(input) {
  * Strings are passed through without conversion.
  *
  * @param {string|Buffer|ArrayBuffer|Uint8Array} input
- * @returns {{ contenu: string, encodage: string }}
+ * @returns {{ content: string, encoding: string }}
  */
 function decodeInput(input) {
-  if (typeof input === "string") return { contenu: input, encodage: "UTF-8" };
+  if (typeof input === "string") return { content: input, encoding: "UTF-8" };
 
   let bytes;
   if (input instanceof Uint8Array) {
@@ -63,16 +295,16 @@ function decodeInput(input) {
 
   // UTF-8 BOM
   if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
-    return { contenu: new TextDecoder("utf-8").decode(bytes.slice(3)), encodage: "UTF-8 BOM" };
+    return { content: new TextDecoder("utf-8").decode(bytes.slice(3)), encoding: "UTF-8 BOM" };
   }
 
-  // Valid UTF-8 — strict decode throws on any invalid byte sequence
+  // Valid UTF-8: strict decode throws on any invalid byte sequence
   try {
     const utf8 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return { contenu: utf8, encodage: "UTF-8" };
+    return { content: utf8, encoding: "UTF-8" };
   } catch {
-    // Fallback: Windows-1252 — compatible avec ISO 8859-15 (norme DGFiP).
-    return { contenu: new TextDecoder("windows-1252").decode(bytes), encodage: "Windows-1252" };
+    // Fallback: Windows-1252, compatible avec ISO 8859-15 (norme DGFiP).
+    return { content: new TextDecoder("windows-1252").decode(bytes), encoding: "Windows-1252" };
   }
 }
 
@@ -80,108 +312,132 @@ function decodeInput(input) {
  * Extract separator, column list, format and index map from the first line of the file.
  * Throws if the separator is unrecognized or required columns are missing.
  *
- * @param {string} contenu
- * @returns {{ separateur: string, entete: string[], format: string, indexColonnes: Object, colonnes: Array }}
+ * @param {string} content
+ * @returns {{ separateur: string, header: string[], format: string, columnIndexes: Object }}
  */
-function parseHeader(contenu) {
-  const premiereLigne = contenu.slice(0, contenu.indexOf("\n"));
-  const separateur = getSeparator(premiereLigne);
+function parseHeader(content) {
+  const firstLine = content.slice(0, content.indexOf("\n"));
+  const separateur = getSeparator(firstLine);
 
-  const entete = premiereLigne
+  const header = firstLine
     .replaceAll("\r", "")
     .replace("Montantdevise", "MontantDevise")
     .replace("Idevise", "IDevise")
     .split(separateur);
 
-  const format = entete.includes("Montant") ? "avecSens" : "standard";
-  const colonnesAttendues = format === "standard" ? COLONNES_FEC : COLONNES_FEC_AVEC_SENS;
+  const format = header.includes("Montant") ? "avecSens" : "standard";
+  const expectedColumns = format === "standard" ? COLONNES_FEC : COLONNES_FEC_AVEC_SENS;
 
-  const colonnesManquantes = colonnesAttendues.filter(col => !entete.includes(col));
-  if (colonnesManquantes.length > 0) {
-    throw new Error(`Fichier erroné (libellé(s) manquant(s) : ${colonnesManquantes.join(', ')})`);
+  const missingColumns = expectedColumns.filter(col => !header.includes(col));
+  if (missingColumns.length > 0) {
+    throw new Error(`Fichier erroné (libellé(s) manquant(s) : ${missingColumns.join(', ')})`);
   }
 
-  const colonnes      = entete.map((col, idx) => [col, idx]);
-  const indexColonnes = Object.fromEntries(colonnes);
+  const columnIndexes = Object.fromEntries(header.map((col, idx) => [col, idx]));
 
-  return { separateur, entete, format, indexColonnes, colonnes };
+  return { separateur, header, format, columnIndexes };
 }
 
 /**
  * Iterate over all data rows and accumulate journals, accounts and period boundaries.
  * Processes line-by-line via indexOf to avoid allocating a full split("\n") array.
  *
- * @param {string} contenu
+ * @param {string} content
  * @param {string} separateur
- * @param {string[]} entete
- * @param {Object} indexColonnes - Column name → index map
- * @param {Array} colonnes - Pre-computed [col, idx] pairs for parseRow
+ * @param {string[]} header
+ * @param {Object} columnIndexes - Column name → index map
  * @param {string} format - 'standard' | 'avecSens'
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, premiereDate: string|null, derniereDate: string|null }}
+ * @param {Object} options
+ * @param {boolean} options.lignes - If false (and no onLigne), rows are neither parsed nor retained.
+ * @param {(ligne: Object, contexte: Object) => void} options.onLigne - Per-row callback; if provided, rows are not retained.
+ * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], firstDate: string|null, lastDate: string|null }}
  */
-function collectData(contenu, separateur, entete, indexColonnes, colonnes, format) {
+function collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet }) {
+  const keepLines = lignes && !onLigne;
+  const dataRequired = keepLines || !!onLigne;
+
   const journaux   = {};
   const comptes    = {};
   const comptesAux = {};
-  let premiereDate = null;
-  let derniereDate = null;
+  const anomalies  = [];
+  let firstDate = null;
+  let lastDate = null;
 
-  const iJournalCode  = indexColonnes["JournalCode"];
-  const iJournalLib   = indexColonnes["JournalLib"];
-  const iEcritureNum  = indexColonnes["EcritureNum"];
-  const iEcritureDate = indexColonnes["EcritureDate"];
-  const iCompteNum    = indexColonnes["CompteNum"];
-  const iCompteLib    = indexColonnes["CompteLib"];
-  const iCompAuxNum   = indexColonnes["CompAuxNum"];
-  const iCompAuxLib   = indexColonnes["CompAuxLib"];
+  const iJournalCode  = columnIndexes["JournalCode"];
+  const iJournalLib   = columnIndexes["JournalLib"];
+  const iEcritureNum  = columnIndexes["EcritureNum"];
+  const iEcritureDate = columnIndexes["EcritureDate"];
+  const iCompteNum    = columnIndexes["CompteNum"];
+  const iCompteLib    = columnIndexes["CompteLib"];
+  const iCompAuxNum   = columnIndexes["CompAuxNum"];
+  const iCompAuxLib   = columnIndexes["CompAuxLib"];
 
-  const nettoyer = (s) => (s || "").replace(/^[\s"]+|[\s"]+$/g, "");
+  // Early-exit on empty string: even a regex on "" has a non-zero setup cost, and
+  // many FEC fields (CompAuxNum, MontantDevise, IDevise...) are empty on most rows.
+  const clean = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
 
-  const premierSautLigne = contenu.indexOf("\n");
-  let debutLigne = premierSautLigne + 1;
-  let indiceLigne = 0;
+  // Row constructor selected once per file (format and keepLines are invariant
+  // for the whole parse) : each row then produces a fixed-shape object literal,
+  // with no `delete`, letting V8 keep a stable hidden class instead of falling
+  // back to dictionary mode on every row.
+  const lineIndex = {
+    compteNum:     iCompteNum,
+    compAuxNum:    iCompAuxNum,
+    compteLib:     iCompteLib,
+    compAuxLib:    iCompAuxLib,
+    pieceRef:      columnIndexes["PieceRef"],
+    pieceDate:     columnIndexes["PieceDate"],
+    ecritureLib:   columnIndexes["EcritureLib"],
+    debit:         columnIndexes["Debit"],
+    credit:        columnIndexes["Credit"],
+    montant:       columnIndexes["Montant"],
+    sens:          columnIndexes["Sens"],
+    ecritureLet:   columnIndexes["EcritureLet"],
+    dateLet:       columnIndexes["DateLet"],
+    validDate:     columnIndexes["ValidDate"],
+    montantDevise: columnIndexes["MontantDevise"],
+    iDevise:       columnIndexes["IDevise"],
+  };
+  const buildRowFn = dataRequired
+    ? (fields, clean, idx, keepLines) => buildRow(fields, clean, idx, keepLines, champsSet, format)
+    : null;
 
-  while (debutLigne < contenu.length) {
-    let finLigne = contenu.indexOf("\n", debutLigne);
-    if (finLigne === -1) finLigne = contenu.length;
+  const firstNewlineIndex = content.indexOf("\n");
+  let lineStart = firstNewlineIndex + 1;
+  let lineIndexCounter = 0;
 
-    const ligneBrute = contenu.slice(debutLigne, finLigne).replace("\r", "");
-    debutLigne = finLigne + 1;
-    indiceLigne++;
+  while (lineStart < content.length) {
+    let lineEnd = content.indexOf("\n", lineStart);
+    if (lineEnd === -1) lineEnd = content.length;
 
-    if (ligneBrute === "") continue;
+    const rawLine = content.slice(lineStart, lineEnd).replace("\r", "");
+    lineStart = lineEnd + 1;
+    lineIndexCounter++;
 
-    const champs = ligneBrute.split(separateur);
+    if (rawLine === "") continue;
+
+    const rowFields = rawLine.split(separateur);
 
     // Tolerate lines missing 1-2 trailing columns (some software omits final separator when no currency)
-    if (champs.length < entete.length && champs.length >= entete.length - 2) {
-      while (champs.length < entete.length) champs.push("");
+    const messageAnomalie = validateRowColumns(rowFields, header, lineIndexCounter);
+    if (messageAnomalie) {
+      anomalies.push({ Ligne: lineIndexCounter + 1, Message: messageAnomalie });
+      continue;
     }
 
-    if (champs.length !== entete.length) {
-      const manquantes = champs.length < entete.length ? entete.slice(champs.length) : [];
-      const enTrop     = champs.length > entete.length ? champs.length - entete.length : 0;
-      let message;
-      if (manquantes.length >= entete.length / 2) {
-        message = `Le fichier FEC semble corrompu ou mal exporté (ligne ${indiceLigne + 1} : ${champs.length} colonne(s) lue(s) sur ${entete.length} attendues). Essayez de le ré-exporter depuis votre logiciel comptable.`;
-      } else if (manquantes.length > 0) {
-        message = `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne ${indiceLigne + 1} : ${manquantes.join(", ")}. Vérifiez le format d'export.`;
-      } else {
-        message = `Fichier FEC invalide — trop de colonnes à la ligne ${indiceLigne + 1} (${enTrop} colonne(s) en trop). Vérifiez le format d'export.`;
+    let data = null;
+    if (dataRequired) {
+      const built = buildRowFn(rowFields, clean, lineIndex, keepLines);
+      data = built.data;
+      if (built.montantsVides.length > 0) {
+        anomalies.push({ Ligne: lineIndexCounter + 1, Message: messageMontantVide(built.montantsVides, lineIndexCounter + 1) });
       }
-      throw new Error(message);
     }
 
-    const donnees = parseRow(colonnes, champs, format, nettoyer);
-
-    const journalCode  = nettoyer(champs[iJournalCode]);
-    const journalLib   = nettoyer(champs[iJournalLib]);
-    const ecritureNum  = nettoyer(champs[iEcritureNum]);
-    const ecritureDate = nettoyer(champs[iEcritureDate]);
-    const compteNum    = nettoyer(champs[iCompteNum]);
-    const compteLib    = nettoyer(champs[iCompteLib]);
-    const compAuxNum   = nettoyer(champs[iCompAuxNum]);
-    const compAuxLib   = nettoyer(champs[iCompAuxLib]);
+    const { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum } =
+      buildContext(rowFields, clean, { iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum });
+    const compteLib  = clean(rowFields[iCompteLib]);
+    const compAuxLib = clean(rowFields[iCompAuxLib]);
 
     // Journal
     if (!(journalCode in journaux)) {
@@ -195,14 +451,18 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
     }
     const journal = journaux[journalCode];
     if (!journal.Ecritures[ecritureNum]) {
-      journal.Ecritures[ecritureNum] = {
-        EcritureDate: ecritureDate,
-        Lignes: []
-      };
+      journal.Ecritures[ecritureNum] = keepLines
+        ? { EcritureDate: ecritureDate, Lignes: [] }
+        : { EcritureDate: ecritureDate };
       journal.NombreEcritures++;
       if (journal.DerniereDate === null || ecritureDate > journal.DerniereDate) journal.DerniereDate = ecritureDate;
     }
-    journal.Ecritures[ecritureNum].Lignes.push(donnees);
+    if (keepLines) {
+      journal.Ecritures[ecritureNum].Lignes.push(data);
+    }
+    if (onLigne) {
+      onLigne(data, { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum });
+    }
     journal.NombreLignes++;
 
     // Comptes
@@ -214,11 +474,11 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
     }
 
     // Période
-    if (premiereDate === null || ecritureDate < premiereDate) premiereDate = ecritureDate;
-    if (derniereDate === null || ecritureDate > derniereDate) derniereDate = ecritureDate;
+    if (firstDate === null || ecritureDate < firstDate) firstDate = ecritureDate;
+    if (lastDate === null || ecritureDate > lastDate) lastDate = ecritureDate;
   }
 
-  return { journaux, comptes, comptesAux, premiereDate, derniereDate };
+  return { journaux, comptes, comptesAux, anomalies, firstDate, lastDate };
 }
 
 /**
@@ -228,81 +488,150 @@ function collectData(contenu, separateur, entete, indexColonnes, colonnes, forma
  * @param {Object} journaux
  * @param {Object} comptes
  * @param {Object} comptesAux
- * @param {string|null} premiereDate - Earliest EcritureDate seen (YYYYMMDD)
- * @param {string|null} derniereDate - Latest EcritureDate seen (YYYYMMDD)
- * @param {string} encodage - Detected encoding
+ * @param {Object[]} anomalies - Malformed rows skipped during parsing ({ Ligne, Message })
+ * @param {string|null} firstDate - Earliest EcritureDate seen (YYYYMMDD)
+ * @param {string|null} lastDate - Latest EcritureDate seen (YYYYMMDD)
+ * @param {string} encoding - Detected encoding
  * @param {string} separateur - Field separator used
  * @param {string} format - 'standard' | 'avecSens'
- * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, meta: Object }}
+ * @param {string|null} siren - SIREN extracted from the original filename, if provided
+ * @param {string|null} clotureExercice - Fiscal year-end date (YYYYMMDD) extracted from
+ *   the original filename, if provided
+ * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], Metadonnees: Object }}
  */
-
-function buildOutput(journaux, comptes, comptesAux, premiereDate, derniereDate, encodage, separateur, format) {
+function buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice) {
   return {
     Journaux: journaux,
     Comptes: comptes,
     ComptesAux: comptesAux,
+    Anomalies: anomalies,
     Metadonnees: {
       Periode: {
-        DateDebut: premiereDate,
-        DateFin: derniereDate,
+        DateDebut: firstDate,
+        DateFin: lastDate,
       },
       Fichier: {
-        Encodage: encodage,
+        Encodage: encoding,
         Separateur: separateur,
         Format: format,
+        Siren: siren,
+        ClotureExercice: clotureExercice,
       },
     },
   };
 }
 
 /**
- * Parse a single data row into a keyed object.
- * Uses pre-computed colonnes to avoid Object.entries() allocation on every call.
- * Converts Montant/Sens to Debit/Credit for avecSens format.
- * Parses Debit and Credit as numbers.
+ * Build a data row object, honoring the `champs` whitelist.
  *
- * @param {Array} colonnes - Pre-computed [col, idx] pairs from header
- * @param {string[]} champs
+ * Follows a fixed canonical order of `if (include(...))` checks, always run in the
+ * same sequence for a given `fieldsSet`/`format`/`keepLines` (all invariant for
+ * the whole file), so the object shape never varies from one row to the next, letting
+ * V8 keep the same hidden class across all rows.
+ *
+ * `CompteLib`/`CompAuxLib` follow a special rule: with no `fieldsSet` (default, all
+ * fields), they are omitted when `keepLines` (already available via `Comptes`/
+ * `ComptesAux`) and included otherwise (`onLigne` mode, row never retained). When
+ * `fieldsSet` is explicit, it always wins over that default: the caller's choice.
+ *
+ * @param {string[]} fields
+ * @param {Function} clean - Field cleaner (strips quotes and whitespace)
+ * @param {Object} idx - Column index map (see `lineIndex` in collectData)
+ * @param {boolean} keepLines
+ * @param {Set<string>|null} fieldsSet - Field whitelist (`options.champs`), or `null` for all fields
  * @param {string} format - 'standard' | 'avecSens'
- * @param {Function} nettoyer - Field cleaner (strips quotes and whitespace)
  * @returns {Object}
  */
-function parseRow(colonnes, champs, format, nettoyer) {
-  const donnees = {};
-  for (const [col, idx] of colonnes) {
-    donnees[col] = nettoyer(champs[idx]);
+function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
+  const include = (name) => fieldsSet === null || fieldsSet.has(name);
+  const data = {};
+  const montantsVides = [];
+
+  if (include("CompteNum"))   data.CompteNum   = clean(fields[idx.compteNum]);
+  if (include("CompAuxNum"))  data.CompAuxNum  = clean(fields[idx.compAuxNum]);
+  if (include("PieceRef"))    data.PieceRef    = clean(fields[idx.pieceRef]);
+  if (include("PieceDate"))   data.PieceDate   = clean(fields[idx.pieceDate]);
+  if (include("EcritureLib")) data.EcritureLib = clean(fields[idx.ecritureLib]);
+
+  // Une colonne Debit/Credit (ou Montant côté avecSens, pour le sens réellement porté par
+  // la ligne) vide dans le fichier source est non conforme à la norme DGFiP (le "0,00"
+  // explicite est attendu) : on la traite comme 0 sans bloquer le parsing, mais on le
+  // signale via `montantsVides`, contrairement au "0,00" synthétique posé côté avecSens
+  // pour le sens non porté par la ligne, qui n'a rien d'anormal.
+  if (include("Debit") || include("Credit")) {
+    if (format === "avecSens") {
+      const sens    = clean(fields[idx.sens]);
+      const montant = clean(fields[idx.montant]);
+      if (include("Debit")) {
+        if (sens === "D") {
+          if (montant === "") montantsVides.push("Debit");
+          data.Debit = parseAmount(montant);
+        } else {
+          data.Debit = 0;
+        }
+      }
+      if (include("Credit")) {
+        if (sens === "C") {
+          if (montant === "") montantsVides.push("Credit");
+          data.Credit = parseAmount(montant);
+        } else {
+          data.Credit = 0;
+        }
+      }
+    } else {
+      const debit  = clean(fields[idx.debit]);
+      const credit = clean(fields[idx.credit]);
+      if (include("Debit")) {
+        if (debit === "") montantsVides.push("Debit");
+        data.Debit = parseAmount(debit);
+      }
+      if (include("Credit")) {
+        if (credit === "") montantsVides.push("Credit");
+        data.Credit = parseAmount(credit);
+      }
+    }
   }
 
-  delete donnees.JournalCode;
-  delete donnees.JournalLib;
-  delete donnees.EcritureNum;
-  delete donnees.EcritureDate;
-  delete donnees.CompteLib;
-  delete donnees.CompAuxLib;
+  if (include("EcritureLet"))   data.EcritureLet   = clean(fields[idx.ecritureLet]);
+  if (include("DateLet"))       data.DateLet       = clean(fields[idx.dateLet]);
+  if (include("ValidDate"))     data.ValidDate     = clean(fields[idx.validDate]);
+  if (include("MontantDevise")) data.MontantDevise = clean(fields[idx.montantDevise]);
+  if (include("IDevise"))       data.IDevise       = clean(fields[idx.iDevise]);
 
-  if (format === "avecSens") {
-    donnees.Debit  = donnees.Sens === "D" ? donnees.Montant : "0,00";
-    donnees.Credit = donnees.Sens === "C" ? donnees.Montant : "0,00";
-    delete donnees.Montant;
-    delete donnees.Sens;
-  }
+  const includeCompteLib  = fieldsSet === null ? !keepLines : fieldsSet.has("CompteLib");
+  const includeCompAuxLib = fieldsSet === null ? !keepLines : fieldsSet.has("CompAuxLib");
+  if (includeCompteLib)  data.CompteLib  = clean(fields[idx.compteLib]);
+  if (includeCompAuxLib) data.CompAuxLib = clean(fields[idx.compAuxLib]);
 
-  donnees.Debit  = parseAmount(donnees.Debit);
-  donnees.Credit = parseAmount(donnees.Credit);
+  return { data, montantsVides };
+}
 
-  return donnees;
+/**
+ * Build an `Anomalies`-style message for a row whose Debit/Credit (or Montant) column
+ * was present but empty: non-conforming per DGFiP (an explicit "0,00" is expected),
+ * but not fatal: the row is still parsed, with the amount treated as 0.
+ *
+ * @param {string[]} champs - Field names affected (`"Debit"` and/or `"Credit"`)
+ * @param {number} ligne - 1-indexed line number, header included
+ * @returns {string}
+ */
+function messageMontantVide(champs, ligne) {
+  return `Montant vide (${champs.join(', ')}) à la ligne ${ligne} : traité comme 0.`;
 }
 
 /**
  * Detect the field separator from the header line.
- * @param {string} premiereLigne
+ * @param {string} firstLine
  * @returns {'\t' | '|'}
  * @throws {Error} If neither tab nor pipe is found
  */
-function getSeparator(premiereLigne) {
-  if (premiereLigne.includes("\t")) return "\t";
-  if (premiereLigne.includes("|")) return "|";
+function getSeparator(firstLine) {
+  if (firstLine.includes("\t")) return "\t";
+  if (firstLine.includes("|")) return "|";
   throw new Error("Séparateur non reconnu (attendu : tabulation ou pipe)");
 }
 
-const parseAmount = (str) => parseFloat(str.replace(',', '.'));
+const parseAmount = (str) => {
+  if (!str || str.trim() === '') return 0;
+  return parseFloat(str.replace(',', '.'));
+};

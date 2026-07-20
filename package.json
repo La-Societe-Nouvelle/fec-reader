@@ -1,6 +1,6 @@
 {
   "name": "@lasocietenouvelle/fec-reader",
-  "version": "1.0.1",
+  "version": "1.1.0-beta.1",
   "description": "FEC parser — French accounting entries flat files (Fichier des Écritures Comptables)",
   "keywords": [
     "fec",

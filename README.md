@@ -2,11 +2,11 @@
 
 [![npm](https://img.shields.io/npm/v/@lasocietenouvelle/fec-reader)](https://www.npmjs.com/package/@lasocietenouvelle/fec-reader)
 
-Parser de fichiers FEC — **Fichier des Écritures Comptables**
+Parser de fichiers FEC (Fichier des Écritures Comptables)
 
 Transforme un FEC brut en structure JSON exploitable : journaux, écritures groupées, comptes, période comptable.
 
-Le FEC est un fichier normalisé produit par les logiciels de comptabilité et remis à l'administration fiscale (DGFiP) lors des contrôles. Il contient l'ensemble des écritures comptables d'un exercice.
+Le FEC est un fichier normalisé produit par les logiciels de comptabilité et remis à l'administration fiscale (DGFiP) lors des contrôles.
 
 ---
 
@@ -16,43 +16,30 @@ Le FEC est un fichier normalisé produit par les logiciels de comptabilité et r
 npm install @lasocietenouvelle/fec-reader
 ```
 
-Requiert **Node.js ≥ 20**. Package en **ES Modules uniquement** (`"type": "module"` dans votre `package.json`).
+Requiert **Node.js ≥ 20**. Package en **ES Modules uniquement** (`"type": "module"`).
 
 ---
 
 ## Utilisation
 
-**Node.js**
-
 ```js
 import { readFileSync } from 'fs';
 import { FECReader } from '@lasocietenouvelle/fec-reader';
 
-const buffer = readFileSync('./mon-fichier.txt');  // pas d'encodage — Buffer brut
+const buffer = readFileSync('./mon-fichier.txt');  // Buffer brut, pas d'encodage à préciser
 
 try {
   const result = FECReader(buffer);  // encodage auto-détecté
 
-  console.log(result.Metadonnees.Periode);
-  // { DateDebut: '20240101', DateFin: '20241231' }
+  console.log(result.Metadonnees.Periode);      // { DateDebut: '20240101', DateFin: '20241231' }
+  console.log(Object.keys(result.Journaux));     // [ 'AN', 'ACH', 'VTE', 'OD' ]
 
-  console.log(Object.keys(result.Journaux));
-  // [ 'AN', 'ACH', 'VTE', 'OD' ]
-
+  if (result.Anomalies.length > 0) {
+    console.warn(`${result.Anomalies.length} ligne(s) ignorée(s)`, result.Anomalies);
+  }
 } catch (error) {
-  console.error('Erreur de parsing FEC :', error.message);
+  console.error('Erreur de parsing FEC :', error.message); // séparateur/en-tête invalide, cas irrécupérable
 }
-```
-
-**Navigateur**
-
-```js
-import { FECReader } from '@lasocietenouvelle/fec-reader';
-
-input.addEventListener('change', async (e) => {
-  const buffer = await e.target.files[0].arrayBuffer();
-  const result = FECReader(buffer);  // encodage auto-détecté
-});
 ```
 
 ---
@@ -62,11 +49,9 @@ input.addEventListener('change', async (e) => {
 | Critère | Valeurs acceptées |
 |---------|-------------------|
 | Extensions | `.txt`, `.csv` |
-| Encodage | Auto-détecté — UTF-8 (avec ou sans BOM), Windows-1252 / ISO 8859-15, ASCII |
+| Encodage | Auto-détecté : UTF-8 (avec ou sans BOM), Windows-1252 / ISO 8859-15, ASCII |
 | Séparateur | Tabulation `\t` ou pipe `\|` |
-| Colonnes montant | `Debit` / `Credit` (format standard) ou `Montant` / `Sens` (format alternatif — converti automatiquement) |
-
-Les colonnes `Montant` et `Sens` sont automatiquement converties en `Debit` et `Credit`.
+| Colonnes montant | `Debit` / `Credit` (standard) ou `Montant` / `Sens` (converti automatiquement) |
 
 Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 
@@ -74,28 +59,57 @@ Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 
 ## API
 
-### `FECReader(input)`
+### `FECReader(input, options?) → FECData`
 
-Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dessous.
+| Option | Type | Défaut | Description |
+|--------|------|--------|-------------|
+| `lignes` | `boolean` | `true` | Si `false`, `Ecritures[num].Lignes[]` n'est pas construit : seuls les agrégats sont conservés. |
+| `onLigne` | `(ligne, contexte) => void` | `null` | Callback par ligne, avec `contexte = { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }`. `ligne` inclut `CompteLib`/`CompAuxLib`. Si fourni, `Lignes[]` n'est jamais construit, même avec `lignes: true`. |
+| `nomFichier` | `string` | `null` | Nom d'origine (`<Siren>FEC<AAAAMMJJ>.txt`) : SIREN et date de clôture extraits dans `Metadonnees.Fichier`. N'affecte pas le parsing. |
+| `champs` | `string[]` | `null` (tous) | Liste blanche des champs construits par ligne, parmi les clés de [`LigneEcriture`](#ligneecriture) + `CompteLib`/`CompAuxLib`. Un nom inconnu lève une erreur. |
 
-**Paramètre :**
+```js
+// Aperçu sans rétention des lignes
+const apercu = FECReader(buffer, { lignes: false });
 
-| Nom | Type | Description |
-|-----|------|-------------|
-| `input` | `string \| Buffer \| ArrayBuffer \| Uint8Array` | Contenu du fichier FEC — les octets bruts sont auto-décodés |
+// Agrégation custom au fil du parsing, sans rétention par le package
+const totauxParCompte = {};
+FECReader(buffer, {
+  onLigne: (ligne, { compteNum }) => {
+    totauxParCompte[compteNum] = (totauxParCompte[compteNum] ?? 0) + ligne.Debit - ligne.Credit;
+  },
+});
 
-**Retour :** un objet [`FECData`](#fecdata).
+// Ne construire que les champs consommés en aval
+FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'] });
+```
 
-**Erreurs levées :**
+**Erreurs levées** (cas irrécupérables) : type d'entrée invalide, séparateur non reconnu, colonnes obligatoires manquantes dans l'en-tête. Une ligne de données mal formée (nombre de colonnes incorrect) ou avec un `Debit`/`Credit` vide (traité comme 0) ne lève pas d'exception : elle est signalée dans `result.Anomalies` (`{ Ligne, Message }`) et le parsing continue.
 
-| Condition | Message |
-|-----------|---------|
-| Type d'entrée invalide | `FECReader : paramètre invalide (string, Buffer ou ArrayBuffer attendu)` |
-| Séparateur non reconnu | `Séparateur non reconnu (attendu : tabulation ou pipe)` |
-| Colonnes obligatoires manquantes | `Fichier erroné (libellé(s) manquant(s) : <colonnes>)` |
-| Ligne avec colonnes manquantes | `Fichier FEC incomplet — colonne(s) manquante(s) à la ligne N : <colonnes>` |
-| Ligne avec trop de colonnes | `Fichier FEC invalide — trop de colonnes à la ligne N` |
-| Fichier corrompu | `Le fichier FEC semble corrompu ou mal exporté (ligne N : X colonne(s) lue(s) sur Y attendues)` |
+---
+
+### `readFECLignes(input, options?) → AsyncGenerator<Item[]>`
+
+Parcourt les lignes du FEC par lots, sans jamais construire `Journaux`/`Comptes`. Pensé pour les gros fichiers, en cédant régulièrement la main à l'event loop. Node.js uniquement.
+
+| Option | Type | Défaut | Effet |
+|--------|------|--------|-------|
+| `champs` | `string[]` | `null` | Identique à `FECReader.champs`. |
+| `intervalleCedeMain` | `number` | `1000` | Lignes par lot yield, et entre deux cessions à l'event loop. |
+
+```js
+import { readFECLignes } from '@lasocietenouvelle/fec-reader';
+
+for await (const lot of readFECLignes(buffer, { champs: ['CompteNum', 'Debit', 'Credit'] })) {
+  for (const item of lot) {
+    if ('anomalie' in item) { console.warn(item.anomalie.Message); continue; }
+    const { ligne, contexte } = item;
+    // traiter la ligne...
+  }
+}
+```
+
+Pour obtenir les agrégats (`Journaux`/`Comptes`) en plus du streaming, faire un second appel à `FECReader` (synchrone, rapide) sur le même contenu.
 
 ---
 
@@ -106,66 +120,29 @@ Parse le contenu d'un fichier FEC et retourne la structure JSON décrite ci-dess
 | Propriété | Type | Description |
 |-----------|------|-------------|
 | `Journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
-| `Comptes` | `Record<string, Compte>` | Comptes généraux indexés par numéro de compte |
-| `ComptesAux` | `Record<string, Compte>` | Comptes auxiliaires (tiers) indexés par numéro |
-| `Metadonnees.Periode.DateDebut` | `string \| null` | Date de début de période (YYYYMMDD) |
-| `Metadonnees.Periode.DateFin` | `string \| null` | Date de fin de période (YYYYMMDD) |
-| `Metadonnees.Fichier.Encodage` | `string` | Encodage détecté (`UTF-8`, `UTF-8 BOM`, `Windows-1252`) |
-| `Metadonnees.Fichier.Separateur` | `string` | Séparateur détecté (`\t` ou `\|`) |
-| `Metadonnees.Fichier.Format` | `string` | Format détecté (`standard` ou `avecSens`) |
+| `Comptes` / `ComptesAux` | `Record<string, { Libelle }>` | Comptes généraux / auxiliaires indexés par numéro |
+| `Anomalies` | `{ Ligne, Message }[]` | Lignes ignorées pendant le parsing (colonnes incorrectes) |
+| `Metadonnees.Periode` | `{ DateDebut, DateFin }` | Bornes de la période (YYYYMMDD) |
+| `Metadonnees.Fichier` | `{ Encodage, Separateur, Format, Siren, ClotureExercice }` | Métadonnées détectées / extraites de `options.nomFichier` |
 
-### `Journal`
+### `Journal` / `Ecriture`
 
-| Propriété | Type | Description |
-|-----------|------|-------------|
-| `Libelle` | `string` | Libellé du journal |
-| `NombreEcritures` | `number` | Nombre total d'écritures |
-| `NombreLignes` | `number` | Nombre total de lignes d'écriture |
-| `DerniereDate` | `string` | Date de la dernière écriture du journal (YYYYMMDD) |
-| `Ecritures` | `Record<string, Ecriture>` | Lignes regroupées par numéro d'écriture |
-
-### `Ecriture`
-
-| Propriété | Type | Description |
-|-----------|------|-------------|
-| `EcritureDate` | `string` | Date d'écriture (YYYYMMDD) |
-| `Lignes` | `Record<string, LigneEcriture[]>` | Lignes regroupées par numéro d'écriture |
+`Journal = { Libelle, NombreEcritures, NombreLignes, DerniereDate, Ecritures }`, où `Ecritures[num] = { EcritureDate, Lignes? }` (`Lignes` absent si `{ lignes: false }` ou `{ onLigne }`).
 
 ### `LigneEcriture`
 
-Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`, `EcritureNum`, `CompteLib` et `CompAuxLib` sont omis — ils sont portés par la structure (`Journaux["ACH"]`, `Ecritures["AC0001"]`) ou disponibles via `Comptes[CompteNum]` et `ComptesAux[CompAuxNum]`.
+Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`, `EcritureNum`, `CompteLib`, `CompAuxLib` sont omis (portés par la structure ou disponibles via `Comptes`/`ComptesAux`) :
 
-| Champ | Type | Description |
-|-------|------|-------------|
-| `CompteNum` | `string` | Numéro de compte général |
-| `CompAuxNum` | `string` | Numéro de compte auxiliaire (tiers) |
-| `PieceRef` | `string` | Référence de pièce justificative |
-| `PieceDate` | `string` | Date de la pièce (YYYYMMDD) |
-| `EcritureLib` | `string` | Libellé de l'écriture |
-| `Debit` | `number` | Montant débit |
-| `Credit` | `number` | Montant crédit |
-| `EcritureLet` | `string` | Code de lettrage |
-| `DateLet` | `string` | Date de lettrage (YYYYMMDD) |
-| `ValidDate` | `string` | Date de validation (YYYYMMDD) |
-| `MontantDevise` | `string` | Montant en devise d'origine |
-| `IDevise` | `string` | Code devise (ex : `EUR`, `USD`) |
-
-### `Compte`
-
-| Propriété | Type | Description |
-|-----------|------|-------------|
-| `Libelle` | `string` | Libellé du compte |
+`CompteNum`, `CompAuxNum`, `PieceRef`, `PieceDate`, `EcritureLib`, `Debit`, `Credit`, `EcritureLet`, `DateLet`, `ValidDate`, `MontantDevise`, `IDevise`.
 
 ---
 
 ## Licence
 
-EUPL-1.2 — [La Société Nouvelle](https://lasocietenouvelle.org)
-
----
+EUPL-1.2, [La Société Nouvelle](https://lasocietenouvelle.org)
 
 ## Support et contribution
 
-Pour signaler un bug ou proposer une amélioration :
 - [Ouvrir une issue sur GitHub](https://github.com/la-societe-nouvelle/fec-reader/issues)
 - [Consulter le code source](https://github.com/la-societe-nouvelle/fec-reader)
+- [Voir le changelog](https://github.com/la-societe-nouvelle/fec-reader/blob/main/CHANGELOG.md)

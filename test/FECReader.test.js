@@ -175,13 +175,22 @@ describe('FECReader', () => {
     it('collecte les comptes principaux', () => {
       const result = FECReader(fixture('sample_tab.txt'));
       expect(result.Comptes).toHaveProperty('60600');
-      expect(result.Comptes['60600']).toMatchObject({ Libelle: 'Fournitures admin.' });
+      expect(result.Comptes['60600']).toEqual({ Libelle: 'Fournitures admin.' });
     });
 
     it('collecte les comptes auxiliaires', () => {
       const result = FECReader(fixture('sample_tab.txt'));
       expect(result.ComptesAux).toHaveProperty('F001');
       expect(result.ComptesAux).toHaveProperty('C001');
+    });
+
+    it("n'expose ni Debit, ni Credit, ni Solde, même pour un compte touché par plusieurs journaux", () => {
+      const content = makeFEC(
+        row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Fournitures', '', '', 'FA001', '20240101', 'Achat', '100,00', '0,00'),
+        row('OD', 'Opérations diverses', 'OD0001', '20240115', '60600', 'Fournitures', '', '', '', '20240115', 'Avoir', '0,00', '30,00'),
+      );
+      const result = FECReader(content);
+      expect(result.Comptes['60600']).toEqual({ Libelle: 'Fournitures' });
     });
   });
 
@@ -195,14 +204,24 @@ describe('FECReader', () => {
       expect(() => FECReader(badContent)).toThrow(/Fichier erroné.*manquant/);
     });
 
-    it('lève une erreur avec le numéro de ligne si une ligne est incomplète', () => {
+    it("signale une ligne incomplète dans Anomalies sans lever d'erreur", () => {
       const incomplete = makeFEC(SAMPLE_ROW, 'ACH\tAchats'); // ligne 3, trop peu de champs
-      expect(() => FECReader(incomplete)).toThrow(/ligne 3/);
+      const result = FECReader(incomplete);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0]).toMatchObject({ Ligne: 3 });
+      expect(result.Anomalies[0].Message).toMatch(/ligne 3/);
     });
 
-    it('affiche un message clair pour un FEC mal formé', () => {
-      const malformedFEC = 'JournalCode|JournalLib\nACH|Achats\nACH'; // FEC incomplet
-      expect(() => FECReader(malformedFEC)).toThrow(/Fichier erroné.*manquant/);
+    it('ignore la ligne malformée mais parse les lignes valides restantes', () => {
+      const content = makeFEC('ACH\tAchats', SAMPLE_ROW); // ligne 2 incomplète, ligne 3 valide
+      const result = FECReader(content);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(1);
+    });
+
+    it('Anomalies est un tableau vide pour un fichier valide', () => {
+      const result = FECReader(fixture('sample_tab.txt'));
+      expect(result.Anomalies).toEqual([]);
     });
   });
 
@@ -235,6 +254,65 @@ describe('FECReader', () => {
       const multiComma = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1,000,00', '0,00');
       const result = FECReader(makeFEC(multiComma));
       expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Seule la première virgule est remplacée
+    });
+
+    it('gère les montants vides (chaîne vide) comme 0', () => {
+      const emptyAmountRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyAmountRow));
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+    });
+  });
+
+  describe('montants vides, signalement dans Anomalies', () => {
+    it('signale une anomalie quand Debit est vide (format standard)', () => {
+      const emptyDebit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyDebit));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0]).toMatchObject({ Ligne: 2 });
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit\).*ligne 2/);
+    });
+
+    it('signale une anomalie quand Credit est vide (format standard)', () => {
+      const emptyCredit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '100,00', '');
+      const result = FECReader(makeFEC(emptyCredit));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Credit\)/);
+    });
+
+    it('signale les deux champs quand Debit et Credit sont vides', () => {
+      const emptyBoth = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '');
+      const result = FECReader(makeFEC(emptyBoth));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit, Credit\)/);
+    });
+
+    it("ne signale rien quand le montant vaut explicitement 0,00 (comportement normal)", () => {
+      const result = FECReader(makeFEC(SAMPLE_ROW));
+      expect(result.Anomalies).toEqual([]);
+    });
+
+    it("ne bloque pas le parsing : la ligne reste dans Lignes[] avec le montant à 0", () => {
+      const emptyDebit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyDebit));
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(1);
+    });
+
+    it("ne signale pas le '0,00' synthétique côté avecSens pour le sens non porté par la ligne", () => {
+      const avecSensHeader = HEADER.replace('Debit\t', 'Montant\t').replace('Credit', 'Sens');
+      const avecSensRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '100,00', 'D');
+      const content = [avecSensHeader, avecSensRow].join('\n');
+      const result = FECReader(content);
+      expect(result.Anomalies).toEqual([]);
+    });
+
+    it('signale une anomalie côté avecSens quand Montant est vide pour le sens porté par la ligne', () => {
+      const avecSensHeader = HEADER.replace('Debit\t', 'Montant\t').replace('Credit', 'Sens');
+      const avecSensRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', 'D');
+      const content = [avecSensHeader, avecSensRow].join('\n');
+      const result = FECReader(content);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit\)/);
     });
   });
 
