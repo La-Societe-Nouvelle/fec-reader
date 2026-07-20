@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@lasocietenouvelle/fec-reader)](https://www.npmjs.com/package/@lasocietenouvelle/fec-reader)
 
-Parser de fichiers FEC — **Fichier des Écritures Comptables**
+Parser de fichiers FEC (Fichier des Écritures Comptables)
 
 Transforme un FEC brut en structure JSON exploitable : journaux, écritures groupées, comptes, période comptable.
 
@@ -42,8 +42,6 @@ try {
 }
 ```
 
-En navigateur, `FECReader` accepte aussi un `ArrayBuffer` (ex. `File.arrayBuffer()` depuis un `<input type="file">`).
-
 ---
 
 ## Formats acceptés
@@ -51,7 +49,7 @@ En navigateur, `FECReader` accepte aussi un `ArrayBuffer` (ex. `File.arrayBuffer
 | Critère | Valeurs acceptées |
 |---------|-------------------|
 | Extensions | `.txt`, `.csv` |
-| Encodage | Auto-détecté — UTF-8 (avec ou sans BOM), Windows-1252 / ISO 8859-15, ASCII |
+| Encodage | Auto-détecté : UTF-8 (avec ou sans BOM), Windows-1252 / ISO 8859-15, ASCII |
 | Séparateur | Tabulation `\t` ou pipe `\|` |
 | Colonnes montant | `Debit` / `Credit` (standard) ou `Montant` / `Sens` (converti automatiquement) |
 
@@ -65,9 +63,9 @@ Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 
 | Option | Type | Défaut | Effet |
 |--------|------|--------|-------|
-| `lignes` | `boolean` | `true` | Si `false`, `Ecritures[num].Lignes[]` n'est pas construit — seuls les agrégats sont conservés. Utile pour un aperçu/métadonnées sur un gros fichier sans retenir le détail en mémoire. |
+| `lignes` | `boolean` | `true` | Si `false`, `Ecritures[num].Lignes[]` n'est pas construit : seuls les agrégats sont conservés. Utile pour un aperçu/métadonnées sur un gros fichier sans retenir le détail en mémoire. |
 | `onLigne` | `(ligne, contexte) => void` | `null` | Callback par ligne, avec `contexte = { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }`. `ligne` inclut `CompteLib`/`CompAuxLib`. Désactive `Lignes[]`, quelle que soit `lignes`. |
-| `nomFichier` | `string` | `null` | Nom d'origine (`<Siren>FEC<AAAAMMJJ>.txt`) — SIREN et date de clôture extraits dans `Metadonnees.Fichier`. N'affecte pas le parsing. |
+| `nomFichier` | `string` | `null` | Nom d'origine (`<Siren>FEC<AAAAMMJJ>.txt`) : SIREN et date de clôture extraits dans `Metadonnees.Fichier`. N'affecte pas le parsing. |
 | `champs` | `string[]` | `null` (tous) | Liste blanche des champs construits par ligne, parmi les clés de [`LigneEcriture`](#ligneecriture) + `CompteLib`/`CompAuxLib`. Un nom inconnu lève une erreur. |
 
 ```js
@@ -92,7 +90,7 @@ FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'] });
 
 ### `readFECLignes(input, options?) → AsyncGenerator<Item[]>`
 
-Itération asynchrone par **lots** (pas ligne à ligne), pour parser un gros FEC sans bloquer l'event loop d'un serveur à process partagé. Ne construit aucun agrégat — flux pur. Node.js uniquement (`setImmediate`).
+Itère par lots sans bloquer l'event loop. Flux pur, aucun agrégat construit. Node.js uniquement.
 
 | Option | Type | Défaut | Effet |
 |--------|------|--------|-------|
@@ -110,8 +108,6 @@ for await (const lot of readFECLignes(buffer, { champs: ['CompteNum', 'Debit', '
   }
 }
 ```
-
-Pourquoi par lots et pas ligne à ligne : le protocole des générateurs async paie une résolution de promesse à chaque `.next()`, un coût amplifié sous un contexte `AsyncLocalStorage` imbriqué (ex. Server Action Next.js). Mesures et détails dans `CHANGELOG.md` (section `[1.1.0-beta.1]`).
 
 Pour obtenir l'agrégat (`Journaux`/`Comptes`) en plus du streaming, faire un second appel à `FECReader` (synchrone, rapide) sur le même contenu.
 
@@ -141,21 +137,12 @@ Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`,
 
 ---
 
-## Changements notables (1.1.0-beta.1)
-
-- **Nouveau** : options `lignes`, `onLigne`, `nomFichier`, `champs` ; fonction `readFECLignes` ; champ `Anomalies`.
-- **Comportement modifié** : une ligne de données mal formée ne lève plus d'exception — elle est signalée dans `Anomalies` et le parsing continue (avant : `throw`). Les erreurs irrécupérables (en-tête invalide) lèvent toujours.
-- **Comportement modifié** : un montant vide est désormais traité comme `0` au lieu de `NaN`.
-
-Détail complet dans `CHANGELOG.md`.
-
----
-
 ## Licence
 
-EUPL-1.2 — [La Société Nouvelle](https://lasocietenouvelle.org)
+EUPL-1.2, [La Société Nouvelle](https://lasocietenouvelle.org)
 
 ## Support et contribution
 
 - [Ouvrir une issue sur GitHub](https://github.com/la-societe-nouvelle/fec-reader/issues)
 - [Consulter le code source](https://github.com/la-societe-nouvelle/fec-reader)
+- [Voir le changelog](https://github.com/la-societe-nouvelle/fec-reader/blob/main/CHANGELOG.md)
