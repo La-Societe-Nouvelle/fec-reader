@@ -96,7 +96,7 @@ export function FECReader(input, options = {}) {
  * amplified — each continuation must restore the ALS context — and at
  * hundreds of thousands of rows this made per-row yielding measurably slower
  * and less stable than batching (regression found and fixed 2026-07-07; see
- * CHANGELOG.md [2.0.0-beta.1] for the measurements). Batching
+ * CHANGELOG.md [1.1.0-beta.1] for the measurements). Batching
  * reduces the number of suspension points from one per row to one per
  * `intervalleCedeMain` rows.
  *

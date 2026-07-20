@@ -120,7 +120,7 @@ export interface ReadFECLignesOptions {
   /** Même liste blanche que `FECReaderOptions.champs`. */
   champs?: Array<keyof LigneAvecLibelles>;
   /** Lignes par lot yield, et par cession à l'event loop (`await setImmediate`). Le
-   * batching évite le coût par-ligne du protocole async — voir CHANGELOG.md [2.0.0-beta.1].
+   * batching évite le coût par-ligne du protocole async — voir CHANGELOG.md [1.1.0-beta.1].
    * @default 1000 */
   intervalleCedeMain?: number;
 }
