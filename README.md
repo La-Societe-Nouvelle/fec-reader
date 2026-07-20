@@ -84,7 +84,7 @@ FECReader(buffer, {
 FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'] });
 ```
 
-**Erreurs levées** (cas irrécupérables) : type d'entrée invalide, séparateur non reconnu, colonnes obligatoires manquantes dans l'en-tête. Une ligne de données mal formée (nombre de colonnes incorrect) ne lève pas d'exception : elle est signalée dans `result.Anomalies` (`{ Ligne, Message }`) et le parsing continue.
+**Erreurs levées** (cas irrécupérables) : type d'entrée invalide, séparateur non reconnu, colonnes obligatoires manquantes dans l'en-tête. Une ligne de données mal formée (nombre de colonnes incorrect) ou avec un `Debit`/`Credit` vide (traité comme 0) ne lève pas d'exception : elle est signalée dans `result.Anomalies` (`{ Ligne, Message }`) et le parsing continue.
 
 ---
 

@@ -226,16 +226,40 @@ describe('anomalies', () => {
     );
   });
 
+  it('yield une anomalie { Message } en plus de la ligne quand Debit est vide', async () => {
+    const entete = fixture('sample_tab.txt').split('\n')[0];
+    const colonnes = entete.split('\t');
+    const champs = new Array(colonnes.length).fill('');
+    champs[colonnes.indexOf('JournalCode')]  = 'ACH';
+    champs[colonnes.indexOf('JournalLib')]   = 'Achats';
+    champs[colonnes.indexOf('EcritureNum')]  = 'AC0001';
+    champs[colonnes.indexOf('EcritureDate')] = '20240115';
+    champs[colonnes.indexOf('CompteNum')]    = '60600';
+    champs[colonnes.indexOf('Credit')]       = '0,00';
+    // Debit reste vide
+    const contenu = `${entete}\n${champs.join('\t')}\n`;
+
+    const items = await collect(readFECLignes(contenu));
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveProperty('anomalie');
+    expect(items[0].anomalie.Message).toMatch(/Montant vide \(Debit\).*ligne 2/);
+    expect(items[1]).toHaveProperty('ligne');
+    expect(items[1].ligne.Debit).toBe(0);
+  });
+
   it('tolère 1-2 colonnes manquantes en fin de ligne : traité comme ligne normale (padding), pas une anomalie', async () => {
     const entete = fixture('sample_tab.txt').split('\n')[0];
     const nbColonnes = entete.split('\t').length;
     // 2 colonnes manquantes en fin de ligne (les 2 dernières colonnes du header sont MontantDevise/IDevise)
+    const colonnes = entete.split('\t');
     const champs = new Array(nbColonnes - 2).fill('');
     champs[4] = 'AC0001';   // EcritureNum
     champs[3] = '20240115'; // EcritureDate
     champs[0] = 'ACH';
     champs[1] = 'Achats';
     champs[5] = '20240115'; // CompteNum placeholder-ish, doesn't matter for this test
+    champs[colonnes.indexOf('Debit')]  = '0,00';
+    champs[colonnes.indexOf('Credit')] = '0,00';
     const contenu = `${entete}\n${champs.join('\t')}\n`;
 
     const items = await collect(readFECLignes(contenu));
@@ -255,6 +279,8 @@ describe('anomalies', () => {
     champs[colonnes.indexOf('EcritureNum')] = 'AC0099';
     champs[colonnes.indexOf('EcritureDate')] = '20240115';
     champs[colonnes.indexOf('CompteNum')] = '60600';
+    champs[colonnes.indexOf('Debit')]  = '0,00';
+    champs[colonnes.indexOf('Credit')] = '0,00';
     // Pas de \n final après cette ligne
     const contenu = `${entete}\n${champs.join('\t')}`;
 

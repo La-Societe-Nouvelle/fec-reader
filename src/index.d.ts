@@ -71,7 +71,9 @@ export interface FECData {
   Journaux: Record<string, Journal>;
   Comptes: Record<string, Compte>;
   ComptesAux: Record<string, Compte>;
-  /** Lignes ignorées pendant le parsing car mal formées (nombre de colonnes incorrect). Vide si le fichier est valide. */
+  /** Lignes mal formées (nombre de colonnes incorrect, ignorées) ou avec un montant vide
+   * (Debit/Credit/Montant, traité comme 0 mais pas ignoré) rencontrées pendant le parsing.
+   * Vide si le fichier est valide. */
   Anomalies: Anomalie[];
   Metadonnees: {
     Periode: {

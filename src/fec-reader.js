@@ -67,7 +67,9 @@ const CHAMPS_LIGNE_DISPONIBLES = [
  * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], Metadonnees: Object }}
  * @throws {Error} If the file has an unrecognized separator or missing header columns
  *   (unrecoverable — nothing can be parsed). Malformed individual rows do not throw:
- *   they are skipped and reported in `Anomalies`.
+ *   they are skipped and reported in `Anomalies`. A row with a blank `Debit`/`Credit`
+ *   (or `Montant`) column is not skipped either — it is parsed with the amount treated
+ *   as 0 and also reported in `Anomalies`, since DGFiP expects an explicit "0,00" there.
  */
 export function FECReader(input, options = {}) {
   const { lignes = true, onLigne = null, nomFichier = null, champs = null } = options;
@@ -170,7 +172,10 @@ export async function* readFECLignes(input, options = {}) {
     if (messageAnomalie) {
       batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageAnomalie } });
     } else {
-      const ligne = buildRow(rowFields, clean, lineIndex, false, champsSet, format);
+      const { data: ligne, montantsVides } = buildRow(rowFields, clean, lineIndex, false, champsSet, format);
+      if (montantsVides.length > 0) {
+        batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageMontantVide(montantsVides, lineIndexCounter + 1) } });
+      }
       const contexte = buildContext(rowFields, clean, {
         iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum,
       });
@@ -420,7 +425,14 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
       continue;
     }
 
-    const data = dataRequired ? buildRowFn(rowFields, clean, lineIndex, keepLines) : null;
+    let data = null;
+    if (dataRequired) {
+      const built = buildRowFn(rowFields, clean, lineIndex, keepLines);
+      data = built.data;
+      if (built.montantsVides.length > 0) {
+        anomalies.push({ Ligne: lineIndexCounter + 1, Message: messageMontantVide(built.montantsVides, lineIndexCounter + 1) });
+      }
+    }
 
     const { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum } =
       buildContext(rowFields, clean, { iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum });
@@ -533,6 +545,7 @@ function buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDa
 function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   const include = (name) => fieldsSet === null || fieldsSet.has(name);
   const data = {};
+  const montantsVides = [];
 
   if (include("CompteNum"))   data.CompteNum   = clean(fields[idx.compteNum]);
   if (include("CompAuxNum"))  data.CompAuxNum  = clean(fields[idx.compAuxNum]);
@@ -540,15 +553,42 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   if (include("PieceDate"))   data.PieceDate   = clean(fields[idx.pieceDate]);
   if (include("EcritureLib")) data.EcritureLib = clean(fields[idx.ecritureLib]);
 
+  // Une colonne Debit/Credit (ou Montant côté avecSens, pour le sens réellement porté par
+  // la ligne) vide dans le fichier source est non conforme à la norme DGFiP (le "0,00"
+  // explicite est attendu) : on la traite comme 0 sans bloquer le parsing, mais on le
+  // signale via `montantsVides` — contrairement au "0,00" synthétique posé côté avecSens
+  // pour le sens non porté par la ligne, qui n'a rien d'anormal.
   if (include("Debit") || include("Credit")) {
     if (format === "avecSens") {
       const sens    = clean(fields[idx.sens]);
       const montant = clean(fields[idx.montant]);
-      if (include("Debit"))  data.Debit  = parseAmount(sens === "D" ? montant : "0,00");
-      if (include("Credit")) data.Credit = parseAmount(sens === "C" ? montant : "0,00");
+      if (include("Debit")) {
+        if (sens === "D") {
+          if (montant === "") montantsVides.push("Debit");
+          data.Debit = parseAmount(montant);
+        } else {
+          data.Debit = 0;
+        }
+      }
+      if (include("Credit")) {
+        if (sens === "C") {
+          if (montant === "") montantsVides.push("Credit");
+          data.Credit = parseAmount(montant);
+        } else {
+          data.Credit = 0;
+        }
+      }
     } else {
-      if (include("Debit"))  data.Debit  = parseAmount(clean(fields[idx.debit]));
-      if (include("Credit")) data.Credit = parseAmount(clean(fields[idx.credit]));
+      const debit  = clean(fields[idx.debit]);
+      const credit = clean(fields[idx.credit]);
+      if (include("Debit")) {
+        if (debit === "") montantsVides.push("Debit");
+        data.Debit = parseAmount(debit);
+      }
+      if (include("Credit")) {
+        if (credit === "") montantsVides.push("Credit");
+        data.Credit = parseAmount(credit);
+      }
     }
   }
 
@@ -563,7 +603,20 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   if (includeCompteLib)  data.CompteLib  = clean(fields[idx.compteLib]);
   if (includeCompAuxLib) data.CompAuxLib = clean(fields[idx.compAuxLib]);
 
-  return data;
+  return { data, montantsVides };
+}
+
+/**
+ * Build an `Anomalies`-style message for a row whose Debit/Credit (or Montant) column
+ * was present but empty — non-conforming per DGFiP (an explicit "0,00" is expected),
+ * but not fatal: the row is still parsed, with the amount treated as 0.
+ *
+ * @param {string[]} champs - Field names affected (`"Debit"` and/or `"Credit"`)
+ * @param {number} ligne - 1-indexed line number, header included
+ * @returns {string}
+ */
+function messageMontantVide(champs, ligne) {
+  return `Montant vide (${champs.join(', ')}) à la ligne ${ligne} : traité comme 0.`;
 }
 
 /**

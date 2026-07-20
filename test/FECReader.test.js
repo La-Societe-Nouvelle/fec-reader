@@ -263,6 +263,59 @@ describe('FECReader', () => {
     });
   });
 
+  describe('montants vides — signalement dans Anomalies', () => {
+    it('signale une anomalie quand Debit est vide (format standard)', () => {
+      const emptyDebit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyDebit));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0]).toMatchObject({ Ligne: 2 });
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit\).*ligne 2/);
+    });
+
+    it('signale une anomalie quand Credit est vide (format standard)', () => {
+      const emptyCredit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '100,00', '');
+      const result = FECReader(makeFEC(emptyCredit));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Credit\)/);
+    });
+
+    it('signale les deux champs quand Debit et Credit sont vides', () => {
+      const emptyBoth = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '');
+      const result = FECReader(makeFEC(emptyBoth));
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit, Credit\)/);
+    });
+
+    it("ne signale rien quand le montant vaut explicitement 0,00 (comportement normal)", () => {
+      const result = FECReader(makeFEC(SAMPLE_ROW));
+      expect(result.Anomalies).toEqual([]);
+    });
+
+    it("ne bloque pas le parsing : la ligne reste dans Lignes[] avec le montant à 0", () => {
+      const emptyDebit = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', '0,00');
+      const result = FECReader(makeFEC(emptyDebit));
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+      expect(result.Journaux['ACH'].NombreLignes).toBe(1);
+    });
+
+    it("ne signale pas le '0,00' synthétique côté avecSens pour le sens non porté par la ligne", () => {
+      const avecSensHeader = HEADER.replace('Debit\t', 'Montant\t').replace('Credit', 'Sens');
+      const avecSensRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '100,00', 'D');
+      const content = [avecSensHeader, avecSensRow].join('\n');
+      const result = FECReader(content);
+      expect(result.Anomalies).toEqual([]);
+    });
+
+    it('signale une anomalie côté avecSens quand Montant est vide pour le sens porté par la ligne', () => {
+      const avecSensHeader = HEADER.replace('Debit\t', 'Montant\t').replace('Credit', 'Sens');
+      const avecSensRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '', 'D');
+      const content = [avecSensHeader, avecSensRow].join('\n');
+      const result = FECReader(content);
+      expect(result.Anomalies).toHaveLength(1);
+      expect(result.Anomalies[0].Message).toMatch(/Montant vide \(Debit\)/);
+    });
+  });
+
   describe('cas limites', () => {
     it('fichier avec seulement l\'en-tête et une ligne vide', () => {
       const result = FECReader(HEADER + '\n');
