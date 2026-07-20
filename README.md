@@ -61,9 +61,9 @@ Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 
 ### `FECReader(input, options?) → FECData`
 
-| Option | Type | Défaut | Effet |
-|--------|------|--------|-------|
-| `lignes` | `boolean` | `true` | Si `false`, `Ecritures[num].Lignes[]` n'est pas construit : seuls les agrégats sont conservés. Utile pour un aperçu/métadonnées sur un gros fichier sans retenir le détail en mémoire. |
+| Option | Type | Défaut | Description |
+|--------|------|--------|-------------|
+| `lignes` | `boolean` | `true` | Si `false`, `Ecritures[num].Lignes[]` n'est pas construit : seuls les agrégats sont conservés. |
 | `onLigne` | `(ligne, contexte) => void` | `null` | Callback par ligne, avec `contexte = { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }`. `ligne` inclut `CompteLib`/`CompAuxLib`. Désactive `Lignes[]`, quelle que soit `lignes`. |
 | `nomFichier` | `string` | `null` | Nom d'origine (`<Siren>FEC<AAAAMMJJ>.txt`) : SIREN et date de clôture extraits dans `Metadonnees.Fichier`. N'affecte pas le parsing. |
 | `champs` | `string[]` | `null` (tous) | Liste blanche des champs construits par ligne, parmi les clés de [`LigneEcriture`](#ligneecriture) + `CompteLib`/`CompAuxLib`. Un nom inconnu lève une erreur. |
@@ -90,7 +90,7 @@ FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'] });
 
 ### `readFECLignes(input, options?) → AsyncGenerator<Item[]>`
 
-Itère par lots sans bloquer l'event loop. Flux pur, aucun agrégat construit. Node.js uniquement.
+Parcourt les lignes du FEC par lots, sans jamais construire `Journaux`/`Comptes`. Pensé pour les gros fichiers, en cédant régulièrement la main à l'event loop. Node.js uniquement.
 
 | Option | Type | Défaut | Effet |
 |--------|------|--------|-------|
@@ -109,7 +109,7 @@ for await (const lot of readFECLignes(buffer, { champs: ['CompteNum', 'Debit', '
 }
 ```
 
-Pour obtenir l'agrégat (`Journaux`/`Comptes`) en plus du streaming, faire un second appel à `FECReader` (synchrone, rapide) sur le même contenu.
+Pour obtenir les agrégats (`Journaux`/`Comptes`) en plus du streaming, faire un second appel à `FECReader` (synchrone, rapide) sur le même contenu.
 
 ---
 
