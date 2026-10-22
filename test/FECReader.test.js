@@ -229,7 +229,8 @@ describe('FECReader', () => {
     it('gère les montants non numériques', () => {
       const badAmountRow = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', 'ABC,00', '0,00');
       const result = FECReader(makeFEC(badAmountRow));
-      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBeNaN();
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+      expect(result.Anomalies[0]).toMatchObject({ Type: 'montant-invalide', Valeurs: { Debit: 'ABC,00' } });
     });
 
     it('gère les dates invalides', () => {
@@ -244,16 +245,18 @@ describe('FECReader', () => {
       expect(result.Journaux['ACH'].NombreLignes).toBe(2);
     });
 
-    it('tolère les montants avec espaces comme séparateurs de milliers', () => {
+    it('refuse les montants avec espaces comme séparateurs de milliers', () => {
       const exoticAmount = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1 000,00', '0,00');
       const result = FECReader(makeFEC(exoticAmount));
-      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Les espaces sont ignorés, reste "00" qui devient 0
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+      expect(result.Anomalies[0].Type).toBe('montant-invalide');
     });
 
-    it('gère les montants avec plusieurs virgules', () => {
+    it('refuse les montants avec plusieurs virgules', () => {
       const multiComma = row('ACH', 'Achats', 'AC0001', '20240101', '60600', 'Test', '', '', 'P1', '20240101', 'T', '1,000,00', '0,00');
       const result = FECReader(makeFEC(multiComma));
-      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(1); // Seule la première virgule est remplacée
+      expect(result.Journaux['ACH'].Ecritures['AC0001'].Lignes[0].Debit).toBe(0);
+      expect(result.Anomalies[0].Type).toBe('montant-invalide');
     });
 
     it('gère les montants vides (chaîne vide) comme 0', () => {

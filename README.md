@@ -34,8 +34,9 @@ try {
   console.log(result.Metadonnees.Periode);      // { DateDebut: '20240101', DateFin: '20241231' }
   console.log(Object.keys(result.Journaux));     // [ 'AN', 'ACH', 'VTE', 'OD' ]
 
-  if (result.Anomalies.length > 0) {
-    console.warn(`${result.Anomalies.length} ligne(s) ignorée(s)`, result.Anomalies);
+  const { AnomaliesParType: n } = result;
+  if (n['colonnes'] || n['montant-invalide'] || n['sens-invalide']) {
+    console.error('FEC non conforme', result.Anomalies);
   }
 } catch (error) {
   console.error('Erreur de parsing FEC :', error.message); // séparateur/en-tête invalide, cas irrécupérable
@@ -67,6 +68,7 @@ Les dates sont conservées au format source **YYYYMMDD** (format DGFiP).
 | `onLigne` | `(ligne, contexte) => void` | `null` | Callback par ligne, avec `contexte = { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum }`. `ligne` inclut `CompteLib`/`CompAuxLib`. Si fourni, `Lignes[]` n'est jamais construit, même avec `lignes: true`. |
 | `nomFichier` | `string` | `null` | Nom d'origine (`<Siren>FEC<AAAAMMJJ>.txt`) : SIREN et date de clôture extraits dans `Metadonnees.Fichier`. N'affecte pas le parsing. |
 | `champs` | `string[]` | `null` (tous) | Liste blanche des champs construits par ligne, parmi les clés de [`LigneEcriture`](#ligneecriture) + `CompteLib`/`CompAuxLib`. Un nom inconnu lève une erreur. |
+| `maxAnomalies` | `number` | `1000` | Nombre maximal d'anomalies détaillées **par type** dans `Anomalies`. `AnomaliesParType` reste exact. `0` ne garde que les compteurs, `Infinity` désactive le plafond. Une valeur qui n'est pas un nombre ≥ 0 lève une erreur. |
 
 ```js
 // Aperçu sans rétention des lignes
@@ -84,7 +86,7 @@ FECReader(buffer, {
 FECReader(buffer, { champs: ['CompteNum', 'CompteLib', 'Debit', 'Credit'] });
 ```
 
-**Erreurs levées** (cas irrécupérables) : type d'entrée invalide, séparateur non reconnu, colonnes obligatoires manquantes dans l'en-tête. Une ligne de données mal formée (nombre de colonnes incorrect) ou avec un `Debit`/`Credit` vide (traité comme 0) ne lève pas d'exception : elle est signalée dans `result.Anomalies` (`{ Ligne, Message }`) et le parsing continue.
+**Erreurs levées** (cas irrécupérables) : type d'entrée invalide, séparateur non reconnu, colonnes obligatoires manquantes dans l'en-tête. Une ligne de données mal formée ne lève pas d'exception : elle est signalée dans `result.Anomalies` (voir [Anomalies](#anomalies)) et le parsing continue.
 
 ---
 
@@ -121,7 +123,8 @@ Pour obtenir les agrégats (`Journaux`/`Comptes`) en plus du streaming, faire un
 |-----------|------|-------------|
 | `Journaux` | `Record<string, Journal>` | Journaux comptables indexés par code journal |
 | `Comptes` / `ComptesAux` | `Record<string, { Libelle }>` | Comptes généraux / auxiliaires indexés par numéro |
-| `Anomalies` | `{ Ligne, Message }[]` | Lignes ignorées pendant le parsing (colonnes incorrectes) |
+| `Anomalies` | `Anomalie[]` | Anomalies rencontrées, plafonnées à `maxAnomalies` par type (voir [Anomalies](#anomalies)) |
+| `AnomaliesParType` | `Partial<Record<AnomalieType, number>>` | Nombre exact d'anomalies par type, jamais plafonné |
 | `Metadonnees.Periode` | `{ DateDebut, DateFin }` | Bornes de la période (YYYYMMDD) |
 | `Metadonnees.Fichier` | `{ Encodage, Separateur, Format, Siren, ClotureExercice }` | Métadonnées détectées / extraites de `options.nomFichier` |
 
@@ -134,6 +137,24 @@ Pour obtenir les agrégats (`Journaux`/`Comptes`) en plus du streaming, faire un
 Champs conformes à la norme DGFiP. `JournalCode`, `JournalLib`, `EcritureDate`, `EcritureNum`, `CompteLib`, `CompAuxLib` sont omis (portés par la structure ou disponibles via `Comptes`/`ComptesAux`) :
 
 `CompteNum`, `CompAuxNum`, `PieceRef`, `PieceDate`, `EcritureLib`, `Debit`, `Credit`, `EcritureLet`, `DateLet`, `ValidDate`, `MontantDevise`, `IDevise`.
+
+### Anomalies
+
+`Anomalie = { Ligne, Type, Message, Champs?, Valeurs? }`. `Ligne` est 1-indexé, en-tête inclus. Les montants sont contrôlés sur chaque ligne, quelles que soient les options (`lignes`, `onLigne`, `champs`), dans `FECReader` comme dans `readFECLignes`.
+
+| `Type` | Cas | Ligne |
+|--------|-----|-------|
+| `colonnes` | Nombre de colonnes non réconciliable | ignorée |
+| `montant-vide` | `Debit` / `Credit` vide (la norme DGFiP attend `0,00`) | conservée, montant 0 |
+| `montant-invalide` | Montant non conforme | conservée, montant 0 |
+| `sens-invalide` | Format `Montant`/`Sens` : `Sens` autre que `D` / `C` | conservée, montants 0 |
+
+Montant conforme : `^[+-]?\d{1,15}([.,]\d+)?$` après retrait des guillemets et espaces en bordure (`1234,56`, `1234.56`, `-12`, `+12,00`). Sont refusés les séparateurs de milliers (`1.234,56`, `1 234,56`), les lettres, plusieurs séparateurs décimaux, les décimales sans partie entière (`,5`) et une partie entière de plus de 15 chiffres. `Sens` est sensible à la casse : `d` est refusé.
+
+- **Une anomalie par ligne et par type** : `Debit` et `Credit` vides donnent une seule anomalie, avec `Champs: ['Debit', 'Credit']`.
+- `Valeurs` porte les valeurs brutes lues pour `montant-invalide` et `sens-invalide` (ex. `{ Debit: '12a4,50' }`).
+- Format `Montant`/`Sens` : `Champs` désigne `Debit` ou `Credit` selon le sens. Si le `Sens` est invalide, seule `sens-invalide` est produite.
+- Un montant refusé est lu comme **0** : l'écriture concernée devient déséquilibrée. Décider du blocage sur `AnomaliesParType`.
 
 ---
 

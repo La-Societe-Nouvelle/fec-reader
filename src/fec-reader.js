@@ -72,13 +72,14 @@ const CHAMPS_LIGNE_DISPONIBLES = [
  *   as 0 and also reported in `Anomalies`, since DGFiP expects an explicit "0,00" there.
  */
 export function FECReader(input, options = {}) {
-  const { lignes = true, onLigne = null, nomFichier = null, champs = null } = options;
+  const { lignes = true, onLigne = null, nomFichier = null, champs = null, maxAnomalies = 1000 } = options;
   const champsSet = validateFields(champs);
+  validateMaxAnomalies(maxAnomalies);
   const { content, encoding } = decodeInput(input);
   const { separateur, header, format, columnIndexes } = parseHeader(content);
-  const { journaux, comptes, comptesAux, firstDate, lastDate, anomalies } = collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet });
+  const { journaux, comptes, comptesAux, firstDate, lastDate, anomalies, anomaliesParType } = collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet, maxAnomalies });
   const { siren, clotureExercice } = parseFilename(nomFichier);
-  return buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice);
+  return buildOutput(journaux, comptes, comptesAux, anomalies, anomaliesParType, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice);
 }
 
 /**
@@ -130,7 +131,7 @@ export async function* readFECLignes(input, options = {}) {
   const iCompteNum    = columnIndexes["CompteNum"];
   const iCompAuxNum   = columnIndexes["CompAuxNum"];
 
-  const clean = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
+  const clean = cleanField;
 
   const lineIndex = {
     compteNum:     iCompteNum,
@@ -170,12 +171,13 @@ export async function* readFECLignes(input, options = {}) {
 
     const messageAnomalie = validateRowColumns(rowFields, header, lineIndexCounter);
     if (messageAnomalie) {
-      batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageAnomalie } });
+      batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Type: "colonnes", Message: messageAnomalie } });
     } else {
-      const { data: ligne, montantsVides } = buildRow(rowFields, clean, lineIndex, false, champsSet, format);
-      if (montantsVides.length > 0) {
-        batch.push({ anomalie: { Ligne: lineIndexCounter + 1, Message: messageMontantVide(montantsVides, lineIndexCounter + 1) } });
+      const anomaliesMontant = checkAmounts(rowFields, clean, lineIndex, format, lineIndexCounter + 1);
+      if (anomaliesMontant !== null) {
+        for (const anomalie of anomaliesMontant) batch.push({ anomalie });
       }
+      const ligne = buildRow(rowFields, clean, lineIndex, false, champsSet, format);
       const contexte = buildContext(rowFields, clean, {
         iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum,
       });
@@ -256,6 +258,19 @@ function validateFields(fields) {
     throw new Error(`FECReader : champ(s) invalide(s) dans l'option champs : ${invalides.join(', ')}`);
   }
   return new Set(fields);
+}
+
+/**
+ * Validate `options.maxAnomalies`: a number >= 0 (`0` keeps only the counters,
+ * `Infinity` disables the cap). Anything else would silently drop every detail.
+ *
+ * @param {*} max
+ * @throws {Error} If `max` is not a number >= 0.
+ */
+function validateMaxAnomalies(max) {
+  if (typeof max !== "number" || Number.isNaN(max) || max < 0) {
+    throw new Error(`FECReader : l'option maxAnomalies doit être un nombre positif ou nul (reçu : ${String(max)})`);
+  }
 }
 
 /**
@@ -352,7 +367,7 @@ function parseHeader(content) {
  * @param {(ligne: Object, contexte: Object) => void} options.onLigne - Per-row callback; if provided, rows are not retained.
  * @returns {{ journaux: Object, comptes: Object, comptesAux: Object, anomalies: Object[], firstDate: string|null, lastDate: string|null }}
  */
-function collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet }) {
+function collectData(content, separateur, header, columnIndexes, format, { lignes, onLigne, champsSet, maxAnomalies }) {
   const keepLines = lignes && !onLigne;
   const dataRequired = keepLines || !!onLigne;
 
@@ -360,6 +375,16 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
   const comptes    = {};
   const comptesAux = {};
   const anomalies  = [];
+  const anomaliesParType = {};
+
+  // Compteur exact par type, détail plafonné à `maxAnomalies` par type : un fichier
+  // en anomalie sur chaque ligne ne retient pas des centaines de milliers d'objets,
+  // et un flot d'un type ne masque pas les premières occurrences d'un autre.
+  const addAnomalie = (anomalie) => {
+    const n = (anomaliesParType[anomalie.Type] ?? 0) + 1;
+    anomaliesParType[anomalie.Type] = n;
+    if (n <= maxAnomalies) anomalies.push(anomalie);
+  };
   let firstDate = null;
   let lastDate = null;
 
@@ -372,9 +397,7 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
   const iCompAuxNum   = columnIndexes["CompAuxNum"];
   const iCompAuxLib   = columnIndexes["CompAuxLib"];
 
-  // Early-exit on empty string: even a regex on "" has a non-zero setup cost, and
-  // many FEC fields (CompAuxNum, MontantDevise, IDevise...) are empty on most rows.
-  const clean = (s) => (!s ? "" : s.replace(/^[\s"]+|[\s"]+$/g, ""));
+  const clean = cleanField;
 
   // Row constructor selected once per file (format and keepLines are invariant
   // for the whole parse) : each row then produces a fixed-shape object literal,
@@ -421,18 +444,18 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
     // Tolerate lines missing 1-2 trailing columns (some software omits final separator when no currency)
     const messageAnomalie = validateRowColumns(rowFields, header, lineIndexCounter);
     if (messageAnomalie) {
-      anomalies.push({ Ligne: lineIndexCounter + 1, Message: messageAnomalie });
+      addAnomalie({ Ligne: lineIndexCounter + 1, Type: "colonnes", Message: messageAnomalie });
       continue;
     }
 
-    let data = null;
-    if (dataRequired) {
-      const built = buildRowFn(rowFields, clean, lineIndex, keepLines);
-      data = built.data;
-      if (built.montantsVides.length > 0) {
-        anomalies.push({ Ligne: lineIndexCounter + 1, Message: messageMontantVide(built.montantsVides, lineIndexCounter + 1) });
-      }
+    // Contrôle des montants systématique, même quand la ligne n'est pas construite
+    // (`lignes: false`) ou que `champs` exclut Debit/Credit.
+    const anomaliesMontant = checkAmounts(rowFields, clean, lineIndex, format, lineIndexCounter + 1);
+    if (anomaliesMontant !== null) {
+      for (const anomalie of anomaliesMontant) addAnomalie(anomalie);
     }
+
+    const data = dataRequired ? buildRowFn(rowFields, clean, lineIndex, keepLines) : null;
 
     const { journalCode, journalLib, ecritureNum, ecritureDate, compteNum, compAuxNum } =
       buildContext(rowFields, clean, { iJournalCode, iJournalLib, iEcritureNum, iEcritureDate, iCompteNum, iCompAuxNum });
@@ -478,7 +501,7 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
     if (lastDate === null || ecritureDate > lastDate) lastDate = ecritureDate;
   }
 
-  return { journaux, comptes, comptesAux, anomalies, firstDate, lastDate };
+  return { journaux, comptes, comptesAux, anomalies, anomaliesParType, firstDate, lastDate };
 }
 
 /**
@@ -488,7 +511,8 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
  * @param {Object} journaux
  * @param {Object} comptes
  * @param {Object} comptesAux
- * @param {Object[]} anomalies - Malformed rows skipped during parsing ({ Ligne, Message })
+ * @param {Object[]} anomalies - Anomalies met during parsing, capped per type ({ Ligne, Type, Message, ... })
+ * @param {Object} anomaliesParType - Exact anomaly count per type, never capped
  * @param {string|null} firstDate - Earliest EcritureDate seen (YYYYMMDD)
  * @param {string|null} lastDate - Latest EcritureDate seen (YYYYMMDD)
  * @param {string} encoding - Detected encoding
@@ -497,14 +521,15 @@ function collectData(content, separateur, header, columnIndexes, format, { ligne
  * @param {string|null} siren - SIREN extracted from the original filename, if provided
  * @param {string|null} clotureExercice - Fiscal year-end date (YYYYMMDD) extracted from
  *   the original filename, if provided
- * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], Metadonnees: Object }}
+ * @returns {{ Journaux: Object, Comptes: Object, ComptesAux: Object, Anomalies: Object[], AnomaliesParType: Object, Metadonnees: Object }}
  */
-function buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice) {
+function buildOutput(journaux, comptes, comptesAux, anomalies, anomaliesParType, firstDate, lastDate, encoding, separateur, format, siren, clotureExercice) {
   return {
     Journaux: journaux,
     Comptes: comptes,
     ComptesAux: comptesAux,
     Anomalies: anomalies,
+    AnomaliesParType: anomaliesParType,
     Metadonnees: {
       Periode: {
         DateDebut: firstDate,
@@ -545,7 +570,6 @@ function buildOutput(journaux, comptes, comptesAux, anomalies, firstDate, lastDa
 function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   const include = (name) => fieldsSet === null || fieldsSet.has(name);
   const data = {};
-  const montantsVides = [];
 
   if (include("CompteNum"))   data.CompteNum   = clean(fields[idx.compteNum]);
   if (include("CompAuxNum"))  data.CompAuxNum  = clean(fields[idx.compAuxNum]);
@@ -553,42 +577,17 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   if (include("PieceDate"))   data.PieceDate   = clean(fields[idx.pieceDate]);
   if (include("EcritureLib")) data.EcritureLib = clean(fields[idx.ecritureLib]);
 
-  // Une colonne Debit/Credit (ou Montant côté avecSens, pour le sens réellement porté par
-  // la ligne) vide dans le fichier source est non conforme à la norme DGFiP (le "0,00"
-  // explicite est attendu) : on la traite comme 0 sans bloquer le parsing, mais on le
-  // signale via `montantsVides`, contrairement au "0,00" synthétique posé côté avecSens
-  // pour le sens non porté par la ligne, qui n'a rien d'anormal.
+  // Conversion seule : un montant vide ou non conforme vaut 0, et un Sens autre que
+  // D/C donne 0 des deux côtés. La détection est faite à part, par checkAmounts.
   if (include("Debit") || include("Credit")) {
     if (format === "avecSens") {
       const sens    = clean(fields[idx.sens]);
       const montant = clean(fields[idx.montant]);
-      if (include("Debit")) {
-        if (sens === "D") {
-          if (montant === "") montantsVides.push("Debit");
-          data.Debit = parseAmount(montant);
-        } else {
-          data.Debit = 0;
-        }
-      }
-      if (include("Credit")) {
-        if (sens === "C") {
-          if (montant === "") montantsVides.push("Credit");
-          data.Credit = parseAmount(montant);
-        } else {
-          data.Credit = 0;
-        }
-      }
+      if (include("Debit"))  data.Debit  = sens === "D" ? parseAmount(montant) : 0;
+      if (include("Credit")) data.Credit = sens === "C" ? parseAmount(montant) : 0;
     } else {
-      const debit  = clean(fields[idx.debit]);
-      const credit = clean(fields[idx.credit]);
-      if (include("Debit")) {
-        if (debit === "") montantsVides.push("Debit");
-        data.Debit = parseAmount(debit);
-      }
-      if (include("Credit")) {
-        if (credit === "") montantsVides.push("Credit");
-        data.Credit = parseAmount(credit);
-      }
+      if (include("Debit"))  data.Debit  = parseAmount(clean(fields[idx.debit]));
+      if (include("Credit")) data.Credit = parseAmount(clean(fields[idx.credit]));
     }
   }
 
@@ -603,20 +602,91 @@ function buildRow(fields, clean, idx, keepLines, fieldsSet, format) {
   if (includeCompteLib)  data.CompteLib  = clean(fields[idx.compteLib]);
   if (includeCompAuxLib) data.CompAuxLib = clean(fields[idx.compAuxLib]);
 
-  return { data, montantsVides };
+  return data;
 }
 
 /**
- * Build an `Anomalies`-style message for a row whose Debit/Credit (or Montant) column
- * was present but empty: non-conforming per DGFiP (an explicit "0,00" is expected),
- * but not fatal: the row is still parsed, with the amount treated as 0.
+ * Detect amount and direction anomalies on a reconciled row, independently of the
+ * `champs` whitelist and of whether rows are built at all. At most one anomaly per
+ * type: fields sharing a problem are grouped in `Champs`.
  *
- * @param {string[]} champs - Field names affected (`"Debit"` and/or `"Credit"`)
+ * - `montant-vide` : blank Debit/Credit (or Montant for the side the row carries).
+ *   Non-conforming per DGFiP (an explicit "0,00" is expected), treated as 0.
+ * - `montant-invalide` : present but not matching `MONTANT_VALIDE`, treated as 0.
+ * - `sens-invalide` (avecSens) : Sens other than D/C. The amount is not checked,
+ *   since it cannot be assigned to a side.
+ *
+ * The synthetic "0,00" on the side an avecSens row does not carry is never reported.
+ *
+ * @param {string[]} fields
+ * @param {Function} clean
+ * @param {Object} idx - Column index map (see `lineIndex` in collectData)
+ * @param {string} format - 'standard' | 'avecSens'
  * @param {number} ligne - 1-indexed line number, header included
- * @returns {string}
+ * @returns {Object[]|null} `null` when the row has no anomaly (common case, no allocation).
  */
-function messageMontantVide(champs, ligne) {
-  return `Montant vide (${champs.join(', ')}) à la ligne ${ligne} : traité comme 0.`;
+function checkAmounts(fields, clean, idx, format, ligne) {
+  if (format === "avecSens") {
+    const sens    = clean(fields[idx.sens]);
+    const montant = clean(fields[idx.montant]);
+    if (sens !== "D" && sens !== "C") {
+      return [{
+        Ligne: ligne,
+        Type: "sens-invalide",
+        Message: `Sens invalide ("${sens}") à la ligne ${ligne} : D ou C attendu, montants traités comme 0.`,
+        Champs: ["Sens"],
+        Valeurs: { Sens: sens, Montant: montant },
+      }];
+    }
+    const statut = amountStatus(montant);
+    if (statut === "ok") return null;
+    return [amountAnomaly(statut, [sens === "D" ? "Debit" : "Credit"], [montant], ligne)];
+  }
+
+  const debit    = clean(fields[idx.debit]);
+  const credit   = clean(fields[idx.credit]);
+  const statutD  = amountStatus(debit);
+  const statutC  = amountStatus(credit);
+  if (statutD === "ok" && statutC === "ok") return null;
+
+  const anomalies = [];
+  for (const statut of ["vide", "invalide"]) {
+    const champs = [];
+    const valeurs = [];
+    if (statutD === statut) { champs.push("Debit");  valeurs.push(debit); }
+    if (statutC === statut) { champs.push("Credit"); valeurs.push(credit); }
+    if (champs.length > 0) anomalies.push(amountAnomaly(statut, champs, valeurs, ligne));
+  }
+  return anomalies;
+}
+
+/**
+ * Build a `montant-vide` or `montant-invalide` anomaly. The `montant-vide` message is
+ * kept identical to earlier versions; `Valeurs` is only set for `montant-invalide`.
+ *
+ * @param {'vide'|'invalide'} statut
+ * @param {string[]} champs - `"Debit"` and/or `"Credit"`
+ * @param {string[]} valeurs - Raw values, aligned with `champs`
+ * @param {number} ligne
+ * @returns {Object}
+ */
+function amountAnomaly(statut, champs, valeurs, ligne) {
+  if (statut === "vide") {
+    return {
+      Ligne: ligne,
+      Type: "montant-vide",
+      Message: `Montant vide (${champs.join(', ')}) à la ligne ${ligne} : traité comme 0.`,
+      Champs: champs,
+    };
+  }
+  const detail = champs.map((c, i) => `${c} : "${valeurs[i]}"`).join(', ');
+  return {
+    Ligne: ligne,
+    Type: "montant-invalide",
+    Message: `Montant invalide (${detail}) à la ligne ${ligne} : traité comme 0.`,
+    Champs: champs,
+    Valeurs: Object.fromEntries(champs.map((c, i) => [c, valeurs[i]])),
+  };
 }
 
 /**
@@ -631,7 +701,50 @@ function getSeparator(firstLine) {
   throw new Error("Séparateur non reconnu (attendu : tabulation ou pipe)");
 }
 
-const parseAmount = (str) => {
-  if (!str || str.trim() === '') return 0;
-  return parseFloat(str.replace(',', '.'));
+// Quotes and whitespace that `cleanField` strips: every `\s` character is either an
+// ASCII code <= 32 or a non-ASCII code, so a printable ASCII bound other than '"'
+// needs no trimming.
+const needsTrim = (code) => code <= 32 || code === 34 || code >= 128;
+
+/**
+ * Strip surrounding quotes and whitespace from a field.
+ *
+ * Early exits: on empty string (many FEC fields, CompAuxNum, MontantDevise, IDevise...,
+ * are empty on most rows) and when both ends are already clean (the common case),
+ * since even a regex replace has a non-zero setup cost on every field of every row.
+ *
+ * @param {string|undefined} s
+ * @returns {string}
+ */
+const cleanField = (s) => {
+  if (!s) return "";
+  if (!needsTrim(s.charCodeAt(0)) && !needsTrim(s.charCodeAt(s.length - 1))) return s;
+  return s.replace(/^[\s"]+|[\s"]+$/g, "");
 };
+
+// Montant conforme, après clean() : signe optionnel, partie entière, décimales
+// optionnelles avec un seul séparateur. Refuse les séparateurs de milliers
+// ("1.234,56", "1 234,56"), les lettres et les décimales sans partie entière.
+// Partie entière bornée à 15 chiffres : au-delà, `parseFloat` perd en précision
+// (jusqu'à renvoyer Infinity), le montant ne serait plus lu fidèlement.
+const MONTANT_VALIDE = /^[+-]?\d{1,15}([.,]\d+)?$/;
+
+/**
+ * @param {string} str - Cleaned amount
+ * @returns {'ok'|'vide'|'invalide'}
+ */
+const amountStatus = (str) => {
+  if (str === "") return "vide";
+  return MONTANT_VALIDE.test(str) ? "ok" : "invalide";
+};
+
+/**
+ * Strict amount conversion: blank or non-conforming values give 0 (reported
+ * separately by checkAmounts), never a truncated `parseFloat` read.
+ *
+ * @param {string} str - Cleaned amount
+ * @returns {number}
+ */
+const parseAmount = (str) =>
+  // `|| 0` ramène "-0,00" (lu -0) à 0.
+  amountStatus(str) === "ok" ? parseFloat(str.replace(',', '.')) || 0 : 0;

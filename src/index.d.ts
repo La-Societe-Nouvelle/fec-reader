@@ -39,10 +39,25 @@ export interface LigneContexte {
   compAuxNum: string;
 }
 
+/**
+ * - `colonnes` : nombre de colonnes non réconciliable, ligne ignorée.
+ * - `montant-vide` : Debit/Credit vide, traité comme 0, ligne conservée.
+ * - `montant-invalide` : montant non conforme (lettres, séparateur de milliers...), traité comme 0, ligne conservée.
+ * - `sens-invalide` : format avecSens, Sens autre que D/C, montants à 0, ligne conservée.
+ */
+export type AnomalieType = 'colonnes' | 'montant-vide' | 'montant-invalide' | 'sens-invalide';
+export type ChampAnomalie = 'Debit' | 'Credit' | 'Montant' | 'Sens';
+
+/** Au plus une anomalie par ligne et par type : les champs concernés sont regroupés dans `Champs`. */
 export interface Anomalie {
   /** Numéro de ligne dans le fichier source (1-indexé, en-tête inclus). */
   Ligne: number;
+  Type: AnomalieType;
   Message: string;
+  /** Colonnes concernées, pour les anomalies de montant ou de sens. */
+  Champs?: ChampAnomalie[];
+  /** Valeurs brutes lues, pour `montant-invalide` et `sens-invalide`. Ex. `{ Debit: "12a4,50" }` */
+  Valeurs?: Partial<Record<ChampAnomalie, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,10 +86,11 @@ export interface FECData {
   Journaux: Record<string, Journal>;
   Comptes: Record<string, Compte>;
   ComptesAux: Record<string, Compte>;
-  /** Lignes mal formées (nombre de colonnes incorrect, ignorées) ou avec un montant vide
-   * (Debit/Credit/Montant, traité comme 0 mais pas ignoré) rencontrées pendant le parsing.
-   * Vide si le fichier est valide. */
+  /** Anomalies rencontrées pendant le parsing, dans l'ordre du fichier, plafonnées à
+   * `maxAnomalies` par type. Vide si le fichier est valide. */
   Anomalies: Anomalie[];
+  /** Nombre exact d'anomalies par type, jamais plafonné : c'est sur lui qu'on décide de bloquer. */
+  AnomaliesParType: Partial<Record<AnomalieType, number>>;
   Metadonnees: {
     Periode: {
       DateDebut: string | null;
@@ -103,6 +119,10 @@ export interface FECReaderOptions {
   /** Liste blanche des champs à construire par ligne. Un nom inconnu lève une erreur.
    * `CompteLib`/`CompAuxLib` explicites priment sur l'auto-exclusion en mode `lignes: true`. */
   champs?: Array<keyof LigneAvecLibelles>;
+  /** Nombre maximal d'anomalies détaillées par type dans `Anomalies` (`AnomaliesParType` reste exact).
+   * `0` ne garde que les compteurs, `Infinity` désactive le plafond. Toute autre valeur qu'un nombre >= 0 lève une erreur.
+   * @default 1000 */
+  maxAnomalies?: number;
 }
 
 /**

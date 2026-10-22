@@ -35,4 +35,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0-beta.2]
+### Added
+- Validation stricte des montants : un montant non conforme (`12a4,50`, `1 234,56`, `1.234,56`, `12,5,0`...) produit une anomalie `montant-invalide` et est lu comme 0. Auparavant, `parseFloat` en lisait silencieusement le début (`1 234,56` → 1).
+- Format `Montant`/`Sens` : un `Sens` autre que `D`/`C` produit une anomalie `sens-invalide` (montants à 0, comme avant, mais désormais signalé).
+- Champ `Type` sur chaque anomalie (`colonnes`, `montant-vide`, `montant-invalide`, `sens-invalide`), plus `Champs` et `Valeurs` (valeurs brutes) selon le type. `Message` inchangé pour les anomalies existantes.
+- `FECData.AnomaliesParType` : nombre exact d'anomalies par type.
+- Option `{ maxAnomalies }` (défaut 1000) : plafond du détail dans `Anomalies`, par type.
+
+### Changed
+- Le contrôle des montants est actif quelles que soient les options : `lignes: false`, `onLigne`, `champs` sans `Debit`/`Credit`, et `readFECLignes`.
+- Raccourci dans le nettoyage des champs quand il n'y a rien à retirer : parsing 10 à 40 % plus rapide sur un FEC de 420 000 lignes.
+
+### Breaking
+- Des fichiers jusqu'ici lus sans anomalie peuvent maintenant en remonter : montants mal formés, `Sens` invalide, et montants vides désormais signalés aussi en mode `lignes: false` ou avec `champs` sans `Debit`/`Credit`.
+- Un montant non numérique (`ABC,00`) est lu comme 0 au lieu de `NaN`, et les montants avec séparateur de milliers ou plusieurs virgules comme 0 au lieu d'une valeur tronquée.
+
+---
+
 ## [Unreleased]
